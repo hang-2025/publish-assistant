@@ -1,0 +1,28 @@
+# 安全白名单：根目录中有真实文章、表格、账号资料、浏览器资料和历史执行文件，默认一律不纳入版本控制。
+/*
+
+!/.gitignore
+!/README.md
+
+# 新本地服务源码（其内部 .gitignore 继续排除 data、令牌与日志）。
+!/yizao-sync-service/
+!/yizao-sync-service/**
+
+# Chrome 扩展源码；其内部 .gitignore 继续排除 node_modules、dist、.env 和私有适配器。
+!/wechatsync-source/
+!/wechatsync-source/Wechatsync-2/
+!/wechatsync-source/Wechatsync-2/**
+/wechatsync-source/Wechatsync-2/.claude/
+/wechatsync-source/Wechatsync-2/.claude-plugin/
+
+# 仅保留协作需要的两份说明，不提交其余 outputs、截图或个人交付物。
+!/outputs/
+/outputs/*
+!/outputs/统一发布助手-PRD-v0.1-待确认.md
+!/outputs/易造发布助手-阶段2J验收材料交付记录-2026-09-07.md
+
+# 截图回归产物可由测试重新生成，不提交到源码仓库。
+/wechatsync-source/Wechatsync-2/workbench-*.png
+/wechatsync-source/Wechatsync-2/packages/extension/local-import-preview.png
+/wechatsync-source/Wechatsync-2/packages/extension/workbench-*.png
+/wechatsync-source/Wechatsync-2/packages/extension/workbench-preview.png

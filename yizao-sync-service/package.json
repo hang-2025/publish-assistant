@@ -1,0 +1,13 @@
+{
+  "name": "yizao-sync-service",
+  "version": "0.2.10-2j-acceptance-materials",
+  "private": true,
+  "type": "module",
+  "description": "易造发布助手 · 本地只读原型服务（只读扫描、模拟闭环、Excel只读预览、平台能力矩阵、真实动作闸门检查、发布前总预演、配置向导、归档门槛预览、真实执行验收单与小样本模板、人工确认发布/登记/归档模拟）",
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test/run-tests.mjs && node test/run-tests-1b.mjs"
+  },
+  "dependencies": {}
+}

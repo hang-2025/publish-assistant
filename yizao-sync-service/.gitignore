@@ -1,0 +1,11 @@
+data/
+*.log
+*.zip
+.env
+.env.*
+!.env.example
+*.xlsx
+*.xls
+*.docx
+coverage/
+.DS_Store
