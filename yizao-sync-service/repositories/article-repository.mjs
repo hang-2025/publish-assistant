@@ -7,7 +7,10 @@ export class ArticleRepository {
 export class InMemoryArticleRepository extends ArticleRepository {
   #articles = new Map();
 
-  async getById(id) { return this.#articles.get(id) || null; }
+  async getById(id) {
+    const article = this.#articles.get(id);
+    return article ? structuredClone(article) : null;
+  }
   async save(article) {
     if (!article?.id) throw new Error('Article.id 不能为空');
     this.#articles.set(article.id, structuredClone(article));
