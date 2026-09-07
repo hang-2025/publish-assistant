@@ -1,12 +1,14 @@
-import { TASK_STATUS, taskStatusFromLegacyStage } from './status.mjs';
+import { TASK_STATUS, assertTaskStatusTransition, isTaskStatus, taskStatusFromLegacyStage } from './status.mjs';
 
 export function createTask(input = {}) {
   const now = new Date().toISOString();
+  const status = input.status || TASK_STATUS.PENDING;
+  if (!isTaskStatus(status)) throw new Error(`Task 状态无效：${String(status)}`);
   return {
     id: String(input.id || input.taskId || ''),
     articleId: String(input.articleId || input.packageId || ''),
     platform: String(input.platform || ''),
-    status: input.status || TASK_STATUS.PENDING,
+    status,
     step: String(input.step || ''),
     progress: Number.isFinite(input.progress) ? input.progress : 0,
     createdAt: input.createdAt || now,
@@ -29,4 +31,15 @@ export function taskFromLegacyRecord(record = {}) {
     error: record.error || (record.states?.draft?.stage === '失败' ? record.states?.draft?.detail : null),
     retryable: ['结果待核对（重启中断）', '结果未知（重启中断）', '失败'].includes(stage),
   });
+}
+
+/** Apply a canonical task transition without mutating the legacy task record. */
+export function transitionTaskStatus(task, nextStatus, changes = {}) {
+  assertTaskStatusTransition(task?.status, nextStatus);
+  return {
+    ...task,
+    ...changes,
+    status: nextStatus,
+    updatedAt: new Date().toISOString(),
+  };
 }

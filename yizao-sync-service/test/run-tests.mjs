@@ -9,13 +9,16 @@ import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { resolveInside, assertRootsIndependent, assertRootSetIndependent } from '../lib/security.mjs';
 import { CrossProcessLock } from '../lib/mutex.mjs';
-import { articleFromScanResult, articleFromPackageDetail } from '../domain/article.mjs';
-import { taskFromLegacyRecord } from '../domain/task.mjs';
-import { TASK_STATUS, VALIDATION_STATUS } from '../domain/status.mjs';
+import { createArticle, articleFromScanResult, articleFromPackageDetail, transitionArticleLifecycle } from '../domain/article.mjs';
+import { createTask, taskFromLegacyRecord, transitionTaskStatus } from '../domain/task.mjs';
+import { ARTICLE_STATUS, TASK_STATUS, VALIDATION_STATUS } from '../domain/status.mjs';
 import { InMemoryArticleRepository } from '../repositories/article-repository.mjs';
+import { TaskRepository } from '../repositories/task-repository.mjs';
 import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
 import { ArticleService } from '../services/article-service.mjs';
-import { platformRegistry } from '../platforms/registry.mjs';
+import { PlatformRegistry, platformRegistry } from '../platforms/registry.mjs';
+import { getCapabilities, checkRealActionGate } from '../lib/capabilities.mjs';
+import { writeXlsx } from '../lib/xlsx.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 
 /**
@@ -135,6 +138,35 @@ test('领域模型：扫描结果可投影为 Article，详情可在不改变旧
   assert.equal(blocked.validation.status, VALIDATION_STATUS.BLOCKED);
 });
 
+test('Article lifecycle：合法转换返回新对象，跳级、回退和终态转换被拒绝', () => {
+  const discovered = articleFromScanResult({
+    packageId: 'pkg-1234567890abcdef12345678',
+    relativePath: '主流平台/zhihu/雷电预警/示例',
+    segments: ['主流平台', 'zhihu', '雷电预警', '示例'],
+    issues: [],
+  });
+  const path = [
+    ARTICLE_STATUS.VALIDATED, ARTICLE_STATUS.READY, ARTICLE_STATUS.QUEUED,
+    ARTICLE_STATUS.PROCESSING, ARTICLE_STATUS.DRAFT_SAVED,
+    ARTICLE_STATUS.WAITING_USER_CONFIRMATION, ARTICLE_STATUS.PUBLISHED,
+    ARTICLE_STATUS.REGISTERED, ARTICLE_STATUS.ARCHIVED,
+  ];
+  const states = [discovered];
+  for (const status of path) states.push(transitionArticleLifecycle(states.at(-1), status));
+  const validated = states[1];
+  const ready = states[2];
+  assert.notEqual(validated, discovered);
+  assert.equal(discovered.lifecycleStatus, ARTICLE_STATUS.DISCOVERED);
+  assert.equal(ready.lifecycleStatus, ARTICLE_STATUS.READY);
+  assert.equal(states.at(-1).lifecycleStatus, ARTICLE_STATUS.ARCHIVED);
+  assert.equal(transitionArticleLifecycle(ready, ARTICLE_STATUS.FAILED).lifecycleStatus, ARTICLE_STATUS.FAILED);
+  assert.throws(() => transitionArticleLifecycle(discovered, ARTICLE_STATUS.ARCHIVED), /非法状态转换/);
+  assert.throws(() => transitionArticleLifecycle(ready, ARTICLE_STATUS.DISCOVERED), /非法状态转换/);
+  assert.throws(() => transitionArticleLifecycle({ ...ready, lifecycleStatus: ARTICLE_STATUS.ARCHIVED }, ARTICLE_STATUS.PUBLISHED), /非法状态转换/);
+  assert.throws(() => transitionArticleLifecycle(ready, 'made_up'), /非法状态转换/);
+  assert.throws(() => createArticle({ lifecycleStatus: 'made_up' }), /状态无效/);
+});
+
 test('统一任务状态：旧模拟阶段只做 canonical 投影，不改旧任务记录', () => {
   const legacy = { taskId: 'tsk_1_deadbeef', packageId: 'pkg-x', platform: 'eyzao.com', states: { draft: { stage: '等待用户最终提交（模拟）' } } };
   const canonical = taskFromLegacyRecord(legacy);
@@ -143,16 +175,90 @@ test('统一任务状态：旧模拟阶段只做 canonical 投影，不改旧任
   assert.equal(legacy.status, undefined);
 });
 
+test('Task state machine：允许顺序推进和幂等更新，拒绝跳级、回退、未知及终态转换', () => {
+  const pending = createTask({ id: 'task-1', articleId: 'article-1', platform: 'zhihu' });
+  const path = [
+    TASK_STATUS.VALIDATING, TASK_STATUS.READY, TASK_STATUS.RUNNING,
+    TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT,
+    TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
+  ];
+  const states = [pending];
+  for (const status of path) states.push(transitionTaskStatus(states.at(-1), status));
+  const validating = states[1];
+  assert.equal(pending.status, TASK_STATUS.PENDING);
+  assert.equal(validating.status, TASK_STATUS.VALIDATING);
+  assert.notEqual(validating, pending);
+  assert.equal(states.at(-1).status, TASK_STATUS.PUBLISHED);
+  assert.equal(transitionTaskStatus(validating, TASK_STATUS.VALIDATING).status, TASK_STATUS.VALIDATING);
+  assert.equal(transitionTaskStatus(validating, TASK_STATUS.FAILED).status, TASK_STATUS.FAILED);
+  assert.equal(transitionTaskStatus(validating, TASK_STATUS.CANCELLED).status, TASK_STATUS.CANCELLED);
+  assert.throws(() => transitionTaskStatus(pending, TASK_STATUS.PUBLISHED), /非法状态转换/);
+  assert.throws(() => transitionTaskStatus(validating, TASK_STATUS.PENDING), /非法状态转换/);
+  assert.throws(() => transitionTaskStatus(validating, 'made_up'), /非法状态转换/);
+  assert.throws(() => transitionTaskStatus({ ...pending, status: TASK_STATUS.PUBLISHED }, TASK_STATUS.FAILED), /非法状态转换/);
+  assert.throws(() => createTask({ status: 'made_up' }), /状态无效/);
+});
+
 test('平台 Registry：模拟能力统一，真实草稿/发布方法保持关闭', async () => {
   assert.equal(platformRegistry.get('www.eyzao.com').id, 'eyzao.com');
   assert.equal(platformRegistry.get('知乎').workflow, 'draft-simulation');
   assert.equal(platformRegistry.get('toutiao').workflow, 'unsupported');
   assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('eyzao.com').publish()).allowed, false);
+  assert.equal(platformRegistry.list().length, 9);
+  for (const adapter of platformRegistry.list()) {
+    assert.equal(adapter.capabilities.saveDraft, false);
+    assert.equal(adapter.capabilities.publish, false);
+    assert.equal(adapter.capabilities.autoPublish, false);
+  }
+  assert.throws(() => new PlatformRegistry([platformRegistry.get('zhihu'), platformRegistry.get('zhihu')]), /重复或无效/);
 });
 
-test('Repository/Router：Excel 写入被拒绝，命令仅按白名单分发', async () => {
-  await assert.rejects(() => new ReadOnlyExcelRepository().write(), /禁止 Excel 写入/);
+test('Capabilities：服务端 Registry 元数据已合并，所有真实动作和未知动作继续关闭', () => {
+  const capabilities = getCapabilities();
+  assert.equal(capabilities.realActionsEnabled, false);
+  assert.equal(capabilities.platforms.length, platformRegistry.list().length);
+  for (const platform of capabilities.platforms) {
+    assert.equal(platform.workflow, platformRegistry.get(platform.id).workflow);
+    assert.equal(platform.capabilities.publish, false);
+    for (const action of ['upload', 'publish', 'excelWrite', 'archiveMove', 'deleteAll']) {
+      assert.equal(checkRealActionGate({ action, platform: platform.id }).allowed, false);
+    }
+  }
+});
+
+test('Repositories：Article 隔离副本，Task 保持旧存储格式并投影 canonical 状态，Excel 只读', async () => {
+  const articleRepository = new InMemoryArticleRepository();
+  const article = { id: 'article-1', nested: { title: '原值' } };
+  await articleRepository.save(article);
+  article.nested.title = '调用方修改';
+  const stored = await articleRepository.getById(article.id);
+  assert.equal(stored.nested.title, '原值');
+  stored.nested.title = '读取方修改';
+  assert.equal((await articleRepository.getById(article.id)).nested.title, '原值');
+  await articleRepository.clear();
+  assert.deepEqual(await articleRepository.list(), []);
+
+  const legacy = { taskId: 'tsk_1_deadbeef', packageId: 'pkg-x', platform: 'eyzao.com', states: { draft: { stage: '等待用户最终提交（模拟）' } } };
+  const calls = [];
+  const taskRepository = new TaskRepository({
+    getTask: async (id) => { calls.push(['get', id]); return legacy; },
+    listTasks: async () => { calls.push(['list']); return [legacy]; },
+    removeTask: async (id) => { calls.push(['remove', id]); return true; },
+  });
+  assert.equal((await taskRepository.getById(legacy.taskId)).taskId, legacy.taskId);
+  assert.equal((await taskRepository.list())[0].status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(await taskRepository.remove(legacy.taskId), true);
+  assert.deepEqual(calls, [['get', legacy.taskId], ['list'], ['remove', legacy.taskId]]);
+
+  const excelPath = path.join(ROOT, 'repository-read-only.xlsx');
+  await fs.writeFile(excelPath, writeXlsx([{ name: '计划', rows: [['任务编号', '平台'], ['PL-1', '知乎']] }]));
+  const excelRepository = new ReadOnlyExcelRepository();
+  assert.deepEqual((await excelRepository.read(excelPath)).sheets[0].rows[1], ['PL-1', '知乎']);
+  await assert.rejects(() => excelRepository.write(), /禁止 Excel 写入/);
+});
+
+test('Command Router：命令仅按白名单分发', async () => {
   const router = createCommandRouter({ ping: async (payload) => ({ value: payload.value }) });
   assert.deepEqual(await router.dispatch({ command: 'ping', payload: { value: 1 } }), { value: 1 });
   await assert.rejects(() => router.dispatch({ command: 'publish', payload: {} }), /未知命令/);

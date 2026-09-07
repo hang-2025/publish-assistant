@@ -1,6 +1,6 @@
 import {
   ARTICLE_STATUS, VALIDATION_STATUS, PUBLISH_STATUS, DRAFT_STATUS,
-  EXCEL_STATUS, ARCHIVE_STATUS,
+  EXCEL_STATUS, ARCHIVE_STATUS, assertArticleStatusTransition, isArticleStatus,
 } from './status.mjs';
 
 function text(value) { return typeof value === 'string' ? value : ''; }
@@ -12,6 +12,8 @@ export function createArticle(input = {}) {
   const issues = list(input.altIssues || input.validation?.issues);
   const validationStatus = input.validation?.status
     || (issues.length ? VALIDATION_STATUS.BLOCKED : VALIDATION_STATUS.UNKNOWN);
+  const lifecycleStatus = input.lifecycleStatus || ARTICLE_STATUS.DISCOVERED;
+  if (!isArticleStatus(lifecycleStatus)) throw new Error(`Article 状态无效：${String(lifecycleStatus)}`);
   return {
     id: text(input.id || input.packageId),
     packageId: text(input.packageId),
@@ -25,7 +27,7 @@ export function createArticle(input = {}) {
     validation: { status: validationStatus, issues, ...(input.validation || {}) },
     targets: list(input.targets),
     tasks: list(input.tasks),
-    lifecycleStatus: input.lifecycleStatus || ARTICLE_STATUS.DISCOVERED,
+    lifecycleStatus,
     publishStatus: input.publishStatus || PUBLISH_STATUS.NOT_PUBLISHED,
     draftStatus: input.draftStatus || DRAFT_STATUS.NOT_STARTED,
     excelStatus: input.excelStatus || EXCEL_STATUS.NOT_REGISTERED,
@@ -77,4 +79,15 @@ export function articleFromPackageDetail(detail, previous = {}) {
     lifecycleStatus: issues.length ? ARTICLE_STATUS.DISCOVERED : ARTICLE_STATUS.VALIDATED,
     updatedAt: new Date().toISOString(),
   });
+}
+
+/** Apply a canonical lifecycle transition without mutating the stored Article. */
+export function transitionArticleLifecycle(article, nextStatus, changes = {}) {
+  assertArticleStatusTransition(article?.lifecycleStatus, nextStatus);
+  return {
+    ...article,
+    ...changes,
+    lifecycleStatus: nextStatus,
+    updatedAt: new Date().toISOString(),
+  };
 }
