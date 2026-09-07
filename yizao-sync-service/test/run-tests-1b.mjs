@@ -907,7 +907,7 @@ test('多平台共享包归档门槛：任一平台未人工确认发布 → 不
   assert.equal(ready.ready, true);
 });
 
-test('1D 能力矩阵与真实动作闸门：当前构建永远不允许真实动作', () => {
+test('1D 能力矩阵与真实动作闸门：默认拒绝，只有显式 Stage 3 知乎草稿例外', () => {
   const caps = getCapabilities();
   assert.equal(caps.realActionsEnabled, false);
   assert.ok(caps.platforms.some((p) => p.id === 'eyzao.com' && p.status === 'simulation-ready'));
@@ -915,7 +915,7 @@ test('1D 能力矩阵与真实动作闸门：当前构建永远不允许真实�
   for (const action of ['upload', 'publish', 'excelWrite', 'archiveMove']) {
     const gate = checkRealActionGate({ action, platform: 'eyzao.com' });
     assert.equal(gate.allowed, false, `${action} 当前必须关闭`);
-    assert.match(gate.reason, /真实动作未启用|只读\/模拟/);
+    assert.match(gate.reason, /真实动作默认关闭|只读\/模拟/);
   }
   const unknown = checkRealActionGate({ action: 'deleteAll', platform: 'eyzao.com' });
   assert.equal(unknown.allowed, false);
@@ -1107,18 +1107,18 @@ test('1C HTTP：previewExcelRegistration 只读预览台账匹配，不创建任
   assert.deepEqual(await fs.readFile(PLAN_HTTP_XLSX), beforeBytes, '只读预览不得改写 Excel');
 });
 
-test('1D HTTP：getCapabilities 展示能力；checkRealActionGate 拒绝真实发布/写表/归档', async () => {
+test('1D HTTP：getCapabilities 展示能力；checkRealActionGate 默认拒绝真实发布/写表/归档', async () => {
   const caps = await call({ command: 'getCapabilities', payload: {} });
   assert.equal(caps.status, 200, JSON.stringify(caps.json));
   assert.equal(caps.json.realActionsEnabled, false);
-  assert.ok(caps.json.platforms.some((p) => p.id === 'zhihu' && p.status === 'draft-simulation'));
+  assert.ok(caps.json.platforms.some((p) => p.id === 'zhihu' && p.status === 'guarded-draft-unverified'));
   assert.ok(caps.json.platforms.some((p) => p.id === 'xiaohongshu' && p.status === 'not-adapted'));
 
   for (const action of ['publish', 'excelWrite', 'archiveMove']) {
     const gate = await call({ command: 'checkRealActionGate', payload: { action, platform: 'eyzao.com' } });
     assert.equal(gate.status, 200, JSON.stringify(gate.json));
     assert.equal(gate.json.allowed, false);
-    assert.match(gate.json.reason, /真实动作未启用|只读\/模拟/);
+    assert.match(gate.json.reason, /真实动作默认关闭|只读\/模拟/);
   }
   const badParam = await call({ command: 'checkRealActionGate', payload: { action: 'publish', platform: 'eyzao.com', url: 'https://example.com' } });
   assert.equal(badParam.status, 422, '真实闸门也必须严格 schema，不能偷塞 URL/命令');
@@ -1455,6 +1455,43 @@ test('1B HTTP：removeTask 清理纯模拟任务后允许重新模拟', async ()
   assert.equal(rm.json.removed, true);
   const tasks2 = await call({ command: 'getTasks' });
   assert.equal(tasks2.json.count, 2);
+});
+
+test('Stage 3 HTTP：知乎草稿需确认、快照、顺序状态与回读证据，且不改变发布/Excel/归档状态', async () => {
+  const pkg = scannedRef.map.get('知乎验收包I');
+  assert.ok(pkg);
+  const preflight = await call({ command: 'preflightPackage', payload: { packageId: pkg.packageId, platform: 'zhihu' } });
+  assert.equal(preflight.status, 200, JSON.stringify(preflight.json));
+  assert.equal(preflight.json.snapshot.siteKey, 'zhihu');
+  assert.equal(preflight.json.snapshot.gate.executable, true);
+
+  const denied = await call({ command: 'prepareZhihuDraft', payload: { packageId: pkg.packageId, userConfirmed: false } });
+  assert.equal(denied.status, 422);
+  const prepared = await call({ command: 'prepareZhihuDraft', payload: { packageId: pkg.packageId, userConfirmed: true } });
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.json));
+  assert.equal(prepared.json.task.status, 'ready');
+  const taskId = prepared.json.task.taskId;
+  const snapshotId = prepared.json.task.snapshotId;
+  const duplicate = await call({ command: 'prepareZhihuDraft', payload: { packageId: pkg.packageId, userConfirmed: true } });
+  assert.equal(duplicate.json.started, false);
+  assert.equal(duplicate.json.reason, 'exists');
+
+  const begin = await call({ command: 'beginZhihuDraft', payload: { taskId, snapshotId, userConfirmed: true } });
+  assert.equal(begin.json.task.status, 'running');
+  for (const status of ['uploading', 'filling', 'saving_draft']) {
+    const progress = await call({ command: 'advanceZhihuDraft', payload: { taskId, status } });
+    assert.equal(progress.json.task.status, status);
+  }
+  const complete = await call({ command: 'completeZhihuDraft', payload: { taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true,
+    postId: '12345', postUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
+  } } });
+  assert.equal(complete.json.task.status, 'waiting_confirmation');
+  assert.equal(complete.json.task.publish.status, '未发布');
+  assert.equal(complete.json.task.excel.status, '未登记');
+  assert.equal(complete.json.task.archive.status, '未归档');
+  const remove = await call({ command: 'removeTask', payload: { taskId } });
+  assert.equal(remove.status, 422, '真实草稿任务审计记录不可删除');
 });
 
 test('1B HTTP：严格 schema——拒绝未知参数/非法 taskId/站点键，日志不含正文与令牌', async () => {

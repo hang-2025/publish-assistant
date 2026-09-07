@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { importDocument, resolveImage, sanitizeHtml, previewDocument, withoutDuplicateTitle } from '../src/local-import/importer'
 import { CodeAdapter } from '../../core/src/adapters/code-adapter'
+import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 const requireCore = createRequire(resolve(process.cwd(), '../core/package.json'))
 const JSZip = requireCore('jszip')
@@ -15,6 +16,64 @@ function file(name: string, content: string | Uint8Array, path = name, type = ''
   return f
 }
 const png = () => file('中文 图.png', new Uint8Array([137,80,78,71]), '发布包/配图/中文 图.png', 'image/png')
+const draftAuthorization = { action: 'saveDraft' as const, platform: 'zhihu' as const, taskId: 'tsk_12345678_deadbeef', snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa' }
+
+function zhihuRuntime(fetchImpl: (url: string, options?: RequestInit) => Promise<Response>) {
+  return {
+    type: 'extension', fetch: fetchImpl,
+    cookies: { get: vi.fn(), set: vi.fn(), remove: vi.fn() },
+    storage: { get: vi.fn(), set: vi.fn(), remove: vi.fn() },
+    session: { get: vi.fn(), set: vi.fn() },
+    dom: { parseHTML: vi.fn(), querySelector: vi.fn(), querySelectorAll: vi.fn(), getTextContent: vi.fn(), getInnerHTML: vi.fn() },
+  } as any
+}
+
+describe('guarded Zhihu draft adapter', () => {
+  it('rejects public publish and reports unauthenticated sessions', async () => {
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async () => new Response('{}', { status: 401 })))
+    await expect(adapter.publish({ title: 'x', html: '<p>x</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    expect((await adapter.checkAuth()).isAuthenticated).toBe(false)
+  })
+
+  it('only succeeds after draft save readback matches', async () => {
+    const stages: string[] = []
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.endsWith('/api/articles/drafts') && options?.method === 'POST') return new Response(JSON.stringify({ id: '12345' }), { status: 200 })
+      if (url.endsWith('/12345/draft') && options?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.endsWith('/12345/draft') && options?.method === 'GET') return new Response(JSON.stringify({ id: '12345', title: '测试', content: '<p>正文</p>' }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization, onDraftStage: (stage) => stages.push(stage) })
+    expect(result.success).toBe(true)
+    expect(result.draftOnly).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+    expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('does not report success when readback fails', async () => {
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.endsWith('/api/articles/drafts')) return new Response(JSON.stringify({ id: '9' }), { status: 200 })
+      if (options?.method === 'PATCH') return new Response(null, { status: 204 })
+      return new Response('{}', { status: 500 })
+    }))
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization })
+    expect(result.success).toBe(false)
+    expect(result.readBackVerified).not.toBe(true)
+  })
+
+  it('rejects saveDraft without a task-bound local authorization', async () => {
+    const adapter = new ZhihuAdapter()
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    await adapter.init(zhihuRuntime(fetchMock))
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('任务/快照授权')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
 
 describe('local article import', () => {
   it('loads UTF-8 Markdown and a Chinese percent-encoded relative image, retaining ALT', async () => {

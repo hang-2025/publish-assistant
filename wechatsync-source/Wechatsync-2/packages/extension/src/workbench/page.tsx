@@ -4,13 +4,13 @@ import { call, health, ServiceAuthError, ServiceUnreachableError, setToken } fro
 import { confirmArchivedSimulated as confirmLocalArchivedSimulated, confirmExcelRegisteredSimulated as confirmLocalExcelRegisteredSimulated, confirmPublishedSimulated as confirmLocalPublishedSimulated, createSimulatedTask, markPackageIdsStale, refreshTasks, removeTask as removeSimTask, restoreTasks, type SimTask } from './tasks'
 
 /**
- * 易造发布助手 · 工作台（阶段2J：可复制/下载的验收材料，仍只读 + 模拟）
+ * 易造发布助手 · 工作台（Stage 3：仅知乎单篇保存草稿进入受保护真实闭环）
  * - 只读扫描本地文章目录、安全预览正文、图片与 ALT/图注对照；
  * - 官网/百家号：经本地服务生成「执行预览与发送快照」，可运行「模拟发布流程」，
  *   终态停在「等待用户最终提交（模拟）」，绝不自动点击最终发布；
- * - 知乎/搜狐：扩展本地「草稿流程预览」模拟（不调用平台接口）；
+ * - 知乎：可在用户当次确认与服务端快照复核后保存一篇草稿；搜狐仍仅模拟；
  * - 头条/网易/小红书等：标注「待适配」，不提供执行入口；
- * - 不上传文章、不修改 Excel、不移动文件、不触发任何真实发布。
+ * - 不公开发布、不修改 Excel、不移动文件；知乎草稿以外的真实上传全部关闭。
  */
 
 interface PkgSummary {
@@ -44,7 +44,7 @@ interface PkgDetail {
  * 文章卡片按来源分类 → 发布流程预览 / 草稿流程预览 / 待适配（禁用）。
  * 能力标签：只读、模拟、待适配、需要另行授权。
  */
-type CapKind = 'publish-preview' | 'draft-preview' | 'not-ready'
+type CapKind = 'publish-preview' | 'draft-preview' | 'guarded-draft' | 'not-ready'
 interface Capability {
   kind: CapKind
   /** 卡片主动作文案 */
@@ -77,6 +77,13 @@ function draftPreview(platform: { id: string; name: string }): Capability {
     explain: `草稿流程仅本地模拟：不调用「${platform.name}」真实接口，终态为「模拟完成（未保存草稿）」，保存草稿 ≠ 已发布。真实投稿需要另行授权。`,
   }
 }
+function guardedDraft(platform: { id: string; name: string }): Capability {
+  return {
+    kind: 'guarded-draft', label: '受保护的真实草稿', platform,
+    tags: ['单篇', '保存草稿', '禁止公开发布'],
+    explain: '仅在当次勾选确认、服务端不可变快照复核和知乎登录检查通过后保存一篇草稿；不会公开发布、写 Excel 或移动文件。',
+  }
+}
 function notReady(why: string): Capability {
   return { kind: 'not-ready', label: '待适配', tags: ['只读', '待适配', '需要另行授权'], explain: `${why}：本轮不提供发布或草稿流程入口，仅作只读展示。` }
 }
@@ -100,6 +107,7 @@ function capabilityFor(segments: string[], catalog: CapabilityPlatform[]): Capab
     'not-adapted': 'unsupported',
   } as Record<string, string>)[platform.status]
   if (workflow === 'official-simulation') return publishPreview(platform.id, platform.name)
+  if (workflow === 'guarded-draft' && platform.id === 'zhihu') return guardedDraft({ id: platform.id, name: platform.name })
   if (workflow === 'draft-simulation') return draftPreview({ id: platform.id, name: platform.name })
   return notReady('该平台尚未接入适配器')
 }
@@ -185,6 +193,8 @@ interface ServerTask {
   excel: { status: string; detail: string; updatedAt: string }
   archive: { status: string; detail: string; updatedAt: string }
   createdAt: string; updatedAt: string; finishedAt?: string
+  status?: string
+  draftResult?: { postId: string; postUrl: string; readBackVerified: boolean; savedAt: string } | null
 }
 
 interface Gate { executable: boolean; blocks: string[]; warnings?: string[] }
@@ -501,6 +511,9 @@ export function Workbench() {
   const [checklist, setChecklist] = useState<RealExecutionChecklist | null>(null)
   const [checklistBusy, setChecklistBusy] = useState(false)
   const [checklistNote, setChecklistNote] = useState('')
+  const [zhihuConfirmed, setZhihuConfirmed] = useState(false)
+  const [zhihuBusy, setZhihuBusy] = useState(false)
+  const [zhihuNote, setZhihuNote] = useState('')
   const pollRef = useRef<number>()
   const archiveGroups = useMemo(() => archiveGroupsFromTasks(serverTasks, tasks), [serverTasks, tasks])
 
@@ -702,10 +715,13 @@ export function Workbench() {
   }
 
   async function runPreflight() {
-    if (!detail || !openCap?.siteKey) return
+    const platformKey = openCap?.siteKey || openCap?.platform?.id
+    if (!detail || !platformKey) return
     setError(''); setDetailError(''); setPreflightNote(''); setPreflightBusy(true)
     try {
-      const result = await call<PreflightResponse>('preflightPackage', { packageId: detail.packageId, siteKey: openCap.siteKey })
+      const result = await call<PreflightResponse>('preflightPackage', openCap?.siteKey
+        ? { packageId: detail.packageId, siteKey: platformKey }
+        : { packageId: detail.packageId, platform: platformKey })
       setPreflight(result)
       setPreflightNote(result.summary.blocks.length
         ? `预演发现 ${result.summary.blocks.length} 项阻塞，请先修复。`
@@ -775,6 +791,45 @@ export function Workbench() {
       validationIssueCount: detail.issues.length + (preview?.missing.length || 0) + detail.images.filter((img) => img.error).length,
     })
     setTasks(await refreshTasks()); setTab('tasks')
+  }
+
+  async function saveZhihuDraft() {
+    if (!detail || !preview || openCap?.platform?.id !== 'zhihu' || !zhihuConfirmed) return
+    setZhihuBusy(true); setZhihuNote(''); setDetailError('')
+    let taskId = ''
+    try {
+      const checked = await call<PreflightResponse>('preflightPackage', { packageId: detail.packageId, platform: 'zhihu' })
+      setPreflight(checked)
+      if (!checked.snapshot || checked.snapshot.gate.blocks.length) {
+        throw new Error(`知乎草稿预检未通过：${checked.snapshot?.gate.blocks.join('；') || checked.summary.blocks.join('；')}`)
+      }
+      const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>('prepareZhihuDraft', {
+        packageId: detail.packageId, userConfirmed: true,
+      })
+      if (!prepared.started || !prepared.task) {
+        if (prepared.reason === 'exists') throw new Error('相同文章与快照已有任务，已阻止重复保存')
+        if (prepared.reason === 'account-busy') throw new Error('当前知乎账号已有进行中任务')
+        throw new Error(prepared.reason || '未能创建知乎草稿任务')
+      }
+      taskId = prepared.task.taskId
+      const snapshotId = prepared.task.snapshotId
+      await call('beginZhihuDraft', { taskId, snapshotId, userConfirmed: true })
+      const response = await chrome.runtime.sendMessage({
+        type: 'YIZAO_ZHIHU_DRAFT',
+        payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
+      }) as { result?: Record<string, unknown>; error?: string }
+      if (response?.error || !response?.result) throw new Error(response?.error || '知乎草稿 Adapter 未返回结果')
+      setZhihuNote('知乎草稿已保存并回读确认。请在任务中心打开草稿检查；不会自动公开发布。')
+      setZhihuConfirmed(false)
+      await reloadServerTasks()
+      setTab('tasks')
+    } catch (e) {
+      if (taskId) await call('failZhihuDraft', { taskId, error: errMessage(e) }).catch(() => {})
+      setZhihuNote(errMessage(e))
+      await reloadServerTasks()
+    } finally {
+      setZhihuBusy(false)
+    }
   }
 
   async function confirmServerPublished(taskId: string) {
@@ -867,7 +922,7 @@ export function Workbench() {
   return <main>
     <header>
       <div>
-        <small>YIZAO PUBLISH WORKBENCH · 阶段2J（只读 + 模拟，无真实执行）</small>
+        <small>YIZAO PUBLISH WORKBENCH · STAGE 3（仅知乎单篇保存草稿）</small>
         <h1>易造发布助手 · 工作台</h1>
         <p data-state={serviceState}>
           {serviceState === 'checking' && '正在检查本地服务…'}
@@ -1138,6 +1193,21 @@ export function Workbench() {
             </div>
           </>}
 
+          {openCap?.kind === 'guarded-draft' && <>
+            <h3>知乎单篇真实草稿（Stage 3）</h3>
+            <p className="hint">流程：只读预检 → 锁定不可变快照 → 检查当前 Chrome 知乎登录 → 上传图片并填写 → 保存草稿 → 平台回读确认。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
+            <label className="row">
+              <input type="checkbox" checked={zhihuConfirmed} onChange={(e) => setZhihuConfirmed(e.target.checked)} />
+              我确认仅为当前文章保存一篇知乎草稿，并理解这会向知乎发送标题、正文和图片。
+            </label>
+            <div className="row">
+              <button className="secondary" onClick={runPreflight} disabled={preflightBusy}>{preflightBusy ? '正在预检…' : '先运行只读预检'}</button>
+              <button onClick={saveZhihuDraft} disabled={!zhihuConfirmed || zhihuBusy}>{zhihuBusy ? '正在保存并回读…' : '保存一篇知乎草稿'}</button>
+              <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>
+            </div>
+            {zhihuNote && <p className={zhihuNote.includes('已保存') ? 'ok' : 'warn'}>{zhihuNote}</p>}
+          </>}
+
           {openCap?.kind === 'not-ready' && <>
             <h3>待适配</h3>
             <p className="hint">{openCap.explain}</p>
@@ -1188,8 +1258,9 @@ export function Workbench() {
           <p className="cap-status">
             {p.status === 'simulation-ready' && '可做发布流程模拟'}
             {p.status === 'draft-simulation' && '可做草稿流程模拟'}
+            {p.status === 'guarded-draft-unverified' && '受保护草稿实现待真实账号验收'}
             {p.status === 'not-adapted' && '待适配'}
-            {!['simulation-ready', 'draft-simulation', 'not-adapted'].includes(p.status) && p.status}
+            {!['simulation-ready', 'draft-simulation', 'guarded-draft-unverified', 'not-adapted'].includes(p.status) && p.status}
           </p>
           <small>当前：{p.currentActions.join('、')}</small>
           <small>计划：{p.plannedActions.join('、')}</small>
@@ -1200,7 +1271,7 @@ export function Workbench() {
     </section>}
 
     {tab === 'safety' && <section className="card">
-      <h2>安全闸门 · 真实动作检查（阶段2J）</h2>
+      <h2>安全闸门 · 真实动作检查（Stage 3）</h2>
       <p className="hint">这是进入真实阶段前的“刹车盘”：只检查规则，不执行任何上传、公开发布、Excel 写入或文件归档。当前版本预期结果应为全部关闭或不支持。</p>
       {!capabilities && <p className="hint">本地服务暂未返回能力表。请确认服务已启动并完成配对。</p>}
       {capabilities && <>
@@ -1232,8 +1303,8 @@ export function Workbench() {
     </section>}
 
     {tab === 'tasks' && <section className="card">
-      <h2>任务中心 · 模拟（阶段2J）</h2>
-      <p className="hint">以下任务均为本地模拟：官网/百家号为本地服务内任务（真实发布需另行授权），知乎/搜狐为扩展本地草稿模拟，均未调用真实平台。四段状态按顺序展示：流程/草稿 → 人工确认发布 → 人工确认登记 → 人工确认归档。</p>
+      <h2>任务中心 · 模拟与知乎草稿（Stage 3）</h2>
+      <p className="hint">官网/百家号与搜狐仍为模拟；知乎可出现受保护的真实草稿任务。草稿保存成功不等于公开发布，后续发布、Excel 登记和归档不会自动触发。</p>
 
       <h3 className="state-title">按发布包汇总 · 归档门槛预览</h3>
       {!archiveGroups.length && <p className="hint">暂无可汇总的任务。创建模拟任务后，这里会按发布包显示是否允许归档。</p>}
@@ -1254,27 +1325,31 @@ export function Workbench() {
       </article>)}</div>}
 
       {serviceState === 'ok' && serverTasks.length > 0 && <>
-        <h3 className="state-title">官网 / 百家号 · 服务端模拟任务</h3>
+        <h3 className="state-title">服务端持久任务</h3>
         <ul className="tasks">{serverTasks.map((t) => <li key={t.taskId}>
           <div className="task-head">
             <strong>{t.title}</strong>
-            <span className="badge sim">模拟</span>
+            <span className={`badge${t.mode === 'simulate' ? ' sim' : ''}`}>{t.mode === 'zhihu-draft' ? '真实草稿' : '模拟'}</span>
             <span className="badge">{t.platformName || t.platform}</span>
             <small>{t.accountLabel || t.accountId}</small>
             <small className="mono">内容版本 {t.contentVersionShort}</small>
-            <button className="danger" onClick={() => removeServerTask(t.taskId)}>删除</button>
+            {t.mode === 'simulate' && <button className="danger" onClick={() => removeServerTask(t.taskId)}>删除</button>}
           </div>
           <div className="task-meta">任务键 <code>{t.taskKey}</code> · 发送快照 {t.snapshotId} · 创建 {fmtTime(t.createdAt)}</div>
           <div className="task-steps">{taskSteps({ draft: t.draft.stage || '未执行', publish: t.publish?.status || '未发布', excel: t.excel?.status || '未登记', archive: t.archive?.status || '未归档' }).map((step) => <div className="task-step" data-state={step.state} key={step.key}>
             <span>{step.label}</span>
             <strong>{step.value}</strong>
           </div>)}</div>
-          <div className="confirm-row" aria-label="模拟确认操作">
+          {t.mode === 'simulate' && <div className="confirm-row" aria-label="模拟确认操作">
             <input value={publishLinks[t.taskId] || ''} onChange={(e) => setPublishLinks({ ...publishLinks, [t.taskId]: e.target.value })} placeholder="正式链接（模拟，可留空）" />
             <button className="secondary" disabled={t.publish?.status === '人工确认已发布'} onClick={() => confirmServerPublished(t.taskId)}>{t.publish?.status === '人工确认已发布' ? '已模拟确认发布' : '模拟确认已发布'}</button>
             <button className="secondary" disabled={t.publish?.status !== '人工确认已发布' || t.excel?.status === '已登记'} onClick={() => confirmServerExcelRegistered(t)}>{t.excel?.status === '已登记' ? '已模拟登记' : (t.publish?.status === '人工确认已发布' ? '模拟确认已登记' : '需先确认发布')}</button>
             <button className="secondary" disabled={t.publish?.status !== '人工确认已发布' || t.excel?.status !== '已登记' || t.archive?.status === '已归档'} onClick={() => confirmServerArchived(t)}>{t.archive?.status === '已归档' ? '已模拟归档' : (t.excel?.status === '已登记' ? '模拟确认已归档' : '需先登记')}</button>
-          </div>
+          </div>}
+          {t.mode === 'zhihu-draft' && t.draftResult?.postUrl && <div className="confirm-row">
+            <button onClick={() => chrome.tabs.create({ url: t.draftResult!.postUrl })}>打开知乎草稿</button>
+            <span className="hint">已回读确认草稿 ID：{t.draftResult.postId}；公开发布仍由用户在知乎页面自行决定。</span>
+          </div>}
           <small>{t.draft.detail}</small>
           {t.publish?.detail && <small>{t.publish.detail}</small>}
           {t.excel?.detail && <small>{t.excel.detail}</small>}
@@ -1286,7 +1361,7 @@ export function Workbench() {
           </div>
         </li>)}</ul>
       </>}
-      {serviceState === 'ok' && serverTasks.length === 0 && <p className="hint">暂无官网/百家号服务端模拟任务。</p>}
+      {serviceState === 'ok' && serverTasks.length === 0 && <p className="hint">暂无服务端持久任务。</p>}
 
       <h3 className="state-title">知乎 / 搜狐 · 扩展本地草稿模拟</h3>
       {!tasks.length && <p className="hint">暂无草稿模拟任务。请在文章库打开发布包后创建。</p>}
@@ -1320,7 +1395,7 @@ export function Workbench() {
     </section>}
 
     <footer>
-      <p>阶段2J 只读 + 模拟：不上传文章、不公开发布、不写真实 Excel、不移动文件、不启动旧执行器。官网/百家号模拟在本地服务内推进，终态「等待用户最终提交」；任务中心以步骤条展示人工确认发布、登记与归档结果；安全闸门、真实执行验收单和单篇小样本模板只读生成，不代表授权执行。</p>
+      <p>Stage 3 仅允许在用户当次确认、不可变快照复核和当前 Chrome 知乎登录检查通过后保存一篇知乎草稿。公开发布、真实 Excel 写入、文件移动/删除、真实归档及旧执行器仍全部禁用；其他平台继续只读或模拟。</p>
       <p>能力标签说明：<em className="tag">只读</em> 仅查看不改写文件；<em className="tag">模拟</em> 不调用真实平台接口；<em className="tag">待适配</em> 平台/网站尚未接入；<em className="tag">需要另行授权</em> 真实发布/草稿/归档需单独授权并完成验收。</p>
     </footer>
   </main>

@@ -8,7 +8,8 @@
 import { platformArchitectureMetadata } from '../platforms/registry.mjs';
 
 export const ACTIONS = {
-  upload: '真实上传/保存草稿',
+  upload: '真实上传',
+  saveDraft: '保存草稿',
   publish: '公开发布',
   excelWrite: 'Excel 写入登记',
   archiveMove: '移动/归档文章包',
@@ -90,17 +91,18 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     id: 'zhihu',
     name: '知乎',
     group: '主流平台',
-    status: 'draft-simulation',
-    currentActions: ['只读扫描', '扩展本地草稿流程模拟'],
-    plannedActions: ['保存草稿', '打开草稿给用户人工发布'],
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '扩展本地草稿流程模拟', '受保护的单篇保存草稿实现（待真实账号人工验收）'],
+    plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
     realActionPolicy: {
-      upload: 'requires-explicit-authorization',
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'stage3-explicit-confirmation-only',
       publish: 'not-supported',
       excelWrite: 'requires-explicit-authorization',
       archiveMove: 'requires-explicit-authorization',
     },
-    evidence: ['用户反馈排版大体正常；仍需结构化真实草稿验收'],
-    risks: ['未接入结果回读与草稿 URL 持久登记'],
+    evidence: ['自动测试覆盖登录失败、保存后回读、重复任务、快照变化、图片失败与重启恢复'],
+    risks: ['尚未使用专用知乎测试账号完成真实草稿人工验收，因此 verified/saveDraft 仍为 false'],
   },
   {
     id: 'sohu',
@@ -150,7 +152,7 @@ export const PLATFORM_CAPABILITIES = LEGACY_PLATFORM_CAPABILITIES.map((platform)
 export function getCapabilities() {
   return {
     version: 2,
-    phase: '2J-acceptance-materials',
+    phase: '3-zhihu-draft-unverified',
     generatedAt: new Date().toISOString(),
     realActionsEnabled: false,
     requirementsBeforeRealActions: BASE_REQUIREMENTS,
@@ -159,21 +161,28 @@ export function getCapabilities() {
   };
 }
 
-export function checkRealActionGate({ action, platform }) {
+export function checkRealActionGate({ action, platform, authorization } = {}) {
   const actionKey = String(action || '').trim();
   const platformKey = String(platform || '').trim();
   const platformInfo = PLATFORM_CAPABILITIES.find((p) => p.id === platformKey) || null;
   const knownAction = Object.prototype.hasOwnProperty.call(ACTIONS, actionKey);
   const policy = platformInfo?.realActionPolicy?.[actionKey] || (knownAction ? 'requires-explicit-authorization' : 'unknown-action');
+  const stage3DraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'zhihu'
+    && authorization?.stage === '3-zhihu-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
   return {
-    allowed: false,
+    allowed: stage3DraftAllowed,
     action: actionKey,
     actionName: ACTIONS[actionKey] || actionKey || '未知动作',
     platform: platformKey,
     platformName: platformInfo?.name || platformKey || '未知平台',
     policy,
-    reason: knownAction
-      ? '当前构建是只读/模拟版本，真实动作未启用。需要用户另行授权、执行器验收和回退方案确认后，才能进入真实阶段。'
+    reason: stage3DraftAllowed
+      ? '仅允许当前已确认且快照复核通过的单篇知乎保存草稿动作；不包含公开发布。'
+      : knownAction
+      ? '真实动作默认关闭。仅 Stage 3 中经用户当次确认、快照复核通过的知乎 saveDraft 可获准。'
       : '未知真实动作不在允许清单中。',
     requirements: BASE_REQUIREMENTS,
   };

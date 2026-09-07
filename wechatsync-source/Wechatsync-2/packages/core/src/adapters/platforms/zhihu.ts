@@ -91,9 +91,21 @@ export class ZhihuAdapter extends CodeAdapter {
     }
   }
 
-  async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
+  async publish(_article: Article, _options?: PublishOptions): Promise<SyncResult> {
+    throw new Error('知乎公开发布已禁用；仅允许通过受保护的 saveDraft 工作流保存草稿')
+  }
+
+  async saveDraft(article: Article, options?: PublishOptions): Promise<SyncResult> {
     return this.withHeaderRules(this.HEADER_RULES, async () => {
-      logger.info('Starting publish...')
+      const authorization = options?.draftAuthorization
+      if (authorization?.action !== 'saveDraft'
+        || authorization.platform !== 'zhihu'
+        || !/^tsk_[0-9]+_[0-9a-f]{8}$/.test(authorization.taskId || '')
+        || !/^snap-[0-9a-f]{24}$/.test(authorization.snapshotId || '')) {
+        throw new Error('知乎 saveDraft 缺少本地服务签发的任务/快照授权')
+      }
+      logger.info('Starting guarded draft save...')
+      await options?.onDraftStage?.('running')
 
       // 1. 创建草稿
       const createResponse = await this.runtime.fetch('https://zhuanlan.zhihu.com/api/articles/drafts', {
@@ -138,6 +150,7 @@ export class ZhihuAdapter extends CodeAdapter {
       let content = article.html || ''
 
       // 3. 处理图片（section → div 转换已在 preprocessConfig 中处理）
+      await options?.onDraftStage?.('uploading')
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),
@@ -148,9 +161,11 @@ export class ZhihuAdapter extends CodeAdapter {
       )
 
       // 4. 知乎特定的内容转换
+      await options?.onDraftStage?.('filling')
       content = this.transformContent(content)
 
       // 5. 更新草稿内容
+      await options?.onDraftStage?.('saving_draft')
       const updateResponse = await this.runtime.fetch(
         `https://zhuanlan.zhihu.com/api/articles/${draftId}/draft`,
         {
@@ -176,12 +191,26 @@ export class ZhihuAdapter extends CodeAdapter {
 
       logger.debug('Draft updated, status:', updateResponse.status)
 
+      // 6. 保存后回读。没有可核对的草稿 ID、标题或正文时绝不报告成功。
+      const readBackResponse = await this.runtime.fetch(
+        `https://zhuanlan.zhihu.com/api/articles/${draftId}/draft`,
+        { method: 'GET', credentials: 'include', headers: { 'x-requested-with': 'fetch' } }
+      )
+      if (!readBackResponse.ok) throw new Error(`草稿回读失败: ${readBackResponse.status}`)
+      const readBack = await readBackResponse.json() as { id?: string | number; title?: string; content?: string }
+      if (String(readBack.id || '') !== String(draftId)
+        || String(readBack.title || '').trim() !== article.title.trim()
+        || !String(readBack.content || '').trim()) {
+        throw new Error('草稿回读内容与本次保存不一致')
+      }
+
       const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}/edit`
 
       return this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
+        readBackVerified: true,
       })
     }).catch((error) => this.createResult(false, {
       error: (error as Error).message,
@@ -445,7 +474,7 @@ export class ZhihuAdapter extends CodeAdapter {
     const authorization = `OSS ${token.access_id}:${signature}`
 
     logger.debug('OSS stringToSign:', JSON.stringify(stringToSign))
-    logger.debug('OSS authorization:', authorization)
+    // Authorization/signature must never be written to extension logs.
 
     // 添加 header 规则来设置正确的 Origin
     let ruleId: string | undefined

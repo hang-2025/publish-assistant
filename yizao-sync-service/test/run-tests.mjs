@@ -180,7 +180,7 @@ test('Task state machine：允许顺序推进和幂等更新，拒绝跳级、�
   const path = [
     TASK_STATUS.VALIDATING, TASK_STATUS.READY, TASK_STATUS.RUNNING,
     TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT,
-    TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
+    TASK_STATUS.DRAFT_SAVED, TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
   ];
   const states = [pending];
   for (const status of path) states.push(transitionTaskStatus(states.at(-1), status));
@@ -199,9 +199,10 @@ test('Task state machine：允许顺序推进和幂等更新，拒绝跳级、�
   assert.throws(() => createTask({ status: 'made_up' }), /状态无效/);
 });
 
-test('平台 Registry：模拟能力统一，真实草稿/发布方法保持关闭', async () => {
+test('平台 Registry：知乎仅开放受保护草稿实现，公开发布与未验收能力保持关闭', async () => {
   assert.equal(platformRegistry.get('www.eyzao.com').id, 'eyzao.com');
-  assert.equal(platformRegistry.get('知乎').workflow, 'draft-simulation');
+  assert.equal(platformRegistry.get('知乎').workflow, 'guarded-draft');
+  assert.equal(platformRegistry.get('知乎').capabilities.implementationAvailable, true);
   assert.equal(platformRegistry.get('toutiao').workflow, 'unsupported');
   assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('eyzao.com').publish()).allowed, false);

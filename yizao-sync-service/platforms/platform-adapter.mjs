@@ -51,6 +51,26 @@ export class PlatformAdapter {
   }
 }
 
+export class GuardedDraftPlatformAdapter extends PlatformAdapter {
+  async checkLogin(context = {}) {
+    return typeof context.checkLogin === 'function'
+      ? context.checkLogin()
+      : { platform: this.id, checked: false, authenticated: false, reason: '登录检查只能由扩展当前会话执行' };
+  }
+
+  async createTask(context = {}) {
+    return typeof context.createDraftTask === 'function'
+      ? context.createDraftTask()
+      : { platform: this.id, created: false, reason: '未提供受保护的草稿任务创建器' };
+  }
+
+  async saveDraft(context = {}) {
+    return typeof context.saveDraft === 'function'
+      ? context.saveDraft()
+      : { platform: this.id, saved: false, allowed: false, reason: '保存草稿必须经过 Stage 3 安全闸门' };
+  }
+}
+
 export const SIMULATION_CAPABILITIES = Object.freeze({
   prepare: true,
   simulate: true,
@@ -70,6 +90,17 @@ export const DRAFT_SIMULATION_CAPABILITIES = Object.freeze({
   imageAlt: true,
   visibleCaption: true,
   verified: false,
+});
+export const GUARDED_DRAFT_CAPABILITIES = Object.freeze({
+  prepare: true,
+  simulate: true,
+  saveDraft: false,
+  publish: false,
+  autoPublish: false,
+  imageAlt: true,
+  visibleCaption: false,
+  verified: false,
+  implementationAvailable: true,
 });
 
 export const UNSUPPORTED_CAPABILITIES = Object.freeze({
