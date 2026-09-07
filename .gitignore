@@ -3,6 +3,8 @@
 
 !/.gitignore
 !/README.md
+!/ARCHITECTURE.md
+!/AGENTS.md
 
 # 新本地服务源码（其内部 .gitignore 继续排除 data、令牌与日志）。
 !/yizao-sync-service/

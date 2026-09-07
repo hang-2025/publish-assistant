@@ -5,6 +5,8 @@
  * 仍需验收什么 / 哪些真实动作必须另行授权”结构化，供工作台展示和未来执行器接入前校验。
  */
 
+import { platformArchitectureMetadata } from '../platforms/registry.mjs';
+
 export const ACTIONS = {
   upload: '真实上传/保存草稿',
   publish: '公开发布',
@@ -19,7 +21,7 @@ const BASE_REQUIREMENTS = [
   '发送快照、Excel 匹配、归档预演均通过',
 ];
 
-export const PLATFORM_CAPABILITIES = [
+const LEGACY_PLATFORM_CAPABILITIES = [
   {
     id: 'eyzao.com',
     name: '易造官网（eyzao.com）',
@@ -133,6 +135,17 @@ export const PLATFORM_CAPABILITIES = [
     risks: ['不得显示发布或草稿成功'],
   })),
 ];
+
+const architectureById = new Map(platformArchitectureMetadata().map((item) => [item.id, item]));
+
+/**
+ * Backward-compatible capability records. Existing fields remain unchanged;
+ * the normalized fields are additive and are the source for new UI decisions.
+ */
+export const PLATFORM_CAPABILITIES = LEGACY_PLATFORM_CAPABILITIES.map((platform) => ({
+  ...platform,
+  ...(architectureById.get(platform.id) || {}),
+}));
 
 export function getCapabilities() {
   return {

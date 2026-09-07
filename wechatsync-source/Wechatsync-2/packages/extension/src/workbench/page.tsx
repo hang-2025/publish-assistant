@@ -59,20 +59,8 @@ interface Capability {
   explain: string
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  zhihu: '知乎', sohu: '搜狐号', toutiao: '头条号', netease: '网易号', xiaohongshu: '小红书',
-}
 const SITE_ADAPTERS: Record<string, string> = {
   'www.eyzao.com': 'emcms', 'eyzao.com': 'emcms', 'www.eyzao.cn': 'fhlcms', 'eyzao.cn': 'fhlcms',
-}
-
-/** 服务端已接入的官网/百家号站点（去掉 www 后匹配；未知站点一律按「待适配」处理）。 */
-const PUBLISH_SITES: Record<string, { name: string; kind: 'official' | 'baijiahao' }> = {
-  'eyzao.com': { name: '易造官网（eyzao.com）', kind: 'official' },
-  'eyzao.cn': { name: '易造官网（eyzao.cn）', kind: 'official' },
-  'yzfanglei.com': { name: '易造官网（yzfanglei.com）', kind: 'official' },
-  baijiahao: { name: '百家号', kind: 'baijiahao' },
-  百家号: { name: '百家号', kind: 'baijiahao' },
 }
 
 function publishPreview(siteKey: string, siteName: string): Capability {
@@ -93,21 +81,26 @@ function notReady(why: string): Capability {
   return { kind: 'not-ready', label: '待适配', tags: ['只读', '待适配', '需要另行授权'], explain: `${why}：本轮不提供发布或草稿流程入口，仅作只读展示。` }
 }
 
-/** 按发布包目录来源判定能力。目录惯例：未发布/<官网|平台>/<站点|平台>… */
-function capabilityFor(segments: string[]): Capability {
+function platformFromSegments(segments: string[], catalog: CapabilityPlatform[]) {
   const [kind = '未分类', source = '未分类'] = segments
-  const s = (source || '').toLowerCase()
-  if (kind === '官网') {
-    const host = s.replace(/^www\./, '')
-    const meta = PUBLISH_SITES[host]
-    if (meta?.kind === 'official') return publishPreview(host, meta.name)
-    return notReady('该官网域名尚未接入适配器')
-  }
-  const site = PUBLISH_SITES[s]
-  if (site?.kind === 'official') return publishPreview(s.replace(/^www\./, ''), site.name)
-  if (site?.kind === 'baijiahao') return publishPreview('baijiahao', site.name)
-  if (s === 'zhihu' || source === '知乎') return draftPreview({ id: 'zhihu', name: PLATFORM_LABELS.zhihu || '知乎' })
-  if (s === 'sohu' || source === '搜狐') return draftPreview({ id: 'sohu', name: PLATFORM_LABELS.sohu || '搜狐号' })
+  const candidates = new Set([source.toLowerCase(), source.toLowerCase().replace(/^www\./, '')])
+  return catalog.find((item) => candidates.has(item.id.toLowerCase())
+    || candidates.has(item.name.toLowerCase())
+    || item.aliases?.some((alias) => candidates.has(alias.toLowerCase()))) || null
+}
+
+/** 按服务端统一能力决定动作；目录只负责提供平台标识。 */
+function capabilityFor(segments: string[], catalog: CapabilityPlatform[]): Capability {
+  const [kind = '未分类'] = segments
+  const platform = platformFromSegments(segments, catalog)
+  if (!platform) return notReady(kind === '官网' ? '该官网域名尚未接入适配器' : '该平台尚未接入适配器')
+  const workflow = platform.workflow || ({
+    'simulation-ready': 'official-simulation',
+    'draft-simulation': 'draft-simulation',
+    'not-adapted': 'unsupported',
+  } as Record<string, string>)[platform.status]
+  if (workflow === 'official-simulation') return publishPreview(platform.id, platform.name)
+  if (workflow === 'draft-simulation') return draftPreview({ id: platform.id, name: platform.name })
   return notReady('该平台尚未接入适配器')
 }
 
@@ -115,16 +108,17 @@ interface PackageCategory { name: string; packages: PkgSummary[] }
 interface PackageSourceGroup { key: string; name: string; badge: string; categories: PackageCategory[]; count: number }
 
 /** 把扫描结果按“网站/平台 → 产品分类 → 文章”整理，保留目录原有顺序。 */
-function groupPackages(packages: PkgSummary[]): PackageSourceGroup[] {
+function groupPackages(packages: PkgSummary[], catalog: CapabilityPlatform[]): PackageSourceGroup[] {
   const sources = new Map<string, { name: string; badge: string; categories: Map<string, PkgSummary[]> }>()
   for (const pkg of packages.filter((item) => item.packageId)) {
     const [kind = '未分类', source = '未分类', category = '未分类'] = pkg.segments
     const isWebsite = kind === '官网' || /(?:^|\.)eyzao\.(?:com|cn)$/i.test(source)
+    const platform = platformFromSegments(pkg.segments, catalog)
     const sourceKey = `${kind}/${source}`
     if (!sources.has(sourceKey)) {
       sources.set(sourceKey, {
-        name: isWebsite ? source : (PLATFORM_LABELS[source.toLowerCase()] || source),
-        badge: isWebsite ? (SITE_ADAPTERS[source.toLowerCase()] || '官网') : source.toLowerCase(),
+        name: platform?.name || source,
+        badge: isWebsite ? (SITE_ADAPTERS[source.toLowerCase()] || '官网') : (platform?.id || source.toLowerCase()),
         categories: new Map(),
       })
     }
@@ -241,6 +235,18 @@ interface CapabilityPlatform {
   plannedActions: string[]
   evidence: string[]
   risks: string[]
+  aliases?: string[]
+  workflow?: 'official-simulation' | 'draft-simulation' | 'unsupported' | string
+  capabilities?: {
+    prepare: boolean
+    simulate: boolean
+    saveDraft: boolean
+    publish: boolean
+    autoPublish: boolean
+    imageAlt: boolean
+    visibleCaption: boolean
+    verified: boolean
+  }
 }
 interface CapabilitiesResponse {
   phase: string
@@ -249,6 +255,32 @@ interface CapabilitiesResponse {
   actions?: Record<string, string>
   platforms: CapabilityPlatform[]
 }
+
+// Compatibility catalog for initial render and older mocked services. Once
+// getCapabilities succeeds, the server-provided registry replaces this data.
+const FALLBACK_PLATFORM_CAPABILITIES: CapabilityPlatform[] = [
+  ...[
+    ['eyzao.com', '易造官网（eyzao.com）', ['www.eyzao.com']],
+    ['eyzao.cn', '易造官网（eyzao.cn）', ['www.eyzao.cn']],
+    ['yzfanglei.com', '易造官网（yzfanglei.com）', ['www.yzfanglei.com']],
+    ['baijiahao', '百家号', ['百家号']],
+  ].map(([id, name, aliases]) => ({
+    id: id as string, name: name as string, aliases: aliases as string[], group: id === 'baijiahao' ? '主流平台' : '官网',
+    status: 'simulation-ready', workflow: 'official-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
+  })),
+  ...[
+    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']],
+  ].map(([id, name, aliases]) => ({
+    id: id as string, name: name as string, aliases: aliases as string[], group: '主流平台',
+    status: 'draft-simulation', workflow: 'draft-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
+  })),
+  ...[
+    ['toutiao', '头条号'], ['netease', '网易号'], ['xiaohongshu', '小红书'],
+  ].map(([id, name]) => ({
+    id, name, aliases: [], group: '待适配平台', status: 'not-adapted', workflow: 'unsupported',
+    currentActions: [], plannedActions: [], evidence: [], risks: [],
+  })),
+]
 interface RealActionGateCheck {
   allowed: boolean
   action: string
@@ -582,8 +614,9 @@ export function Workbench() {
   async function openPackage(pkg: PkgSummary) {
     if (!pkg.packageId) return
     setDetail(null); setDetailError(''); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote('')
-    setOpenCap(capabilityFor(pkg.segments))
     try {
+      const currentCapabilities = capabilities || { phase: 'compatibility', realActionsEnabled: false, requirementsBeforeRealActions: [], platforms: FALLBACK_PLATFORM_CAPABILITIES }
+      setOpenCap(capabilityFor(pkg.segments, currentCapabilities.platforms))
       setDetail(await call<PkgDetail>('getPackage', { packageId: pkg.packageId }))
     } catch (e) {
       setDetailError(errMessage(e))
@@ -935,7 +968,7 @@ export function Workbench() {
         </div>
         {(['unpublished', 'published'] as const).filter((r) => scans[r]?.length).map((root) => <div key={root} className="library-state">
           <h3 className="state-title">{root === 'unpublished' ? '未发布' : '已发布（历史待核对）'}</h3>
-          {groupPackages(scans[root]!).map((source) => <section className="source-group" key={source.key}>
+          {groupPackages(scans[root]!, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES).map((source) => <section className="source-group" key={source.key}>
             <div className="source-head">
               <strong>{source.name}</strong>
               <span className="source-badge">{source.badge}</span>
@@ -948,7 +981,7 @@ export function Workbench() {
                 <small>{category.packages.length} 个发布包</small>
               </div>
               <div className="cards">{category.packages.map((pkg) => {
-                const cap = capabilityFor(pkg.segments)
+                const cap = capabilityFor(pkg.segments, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES)
                 const disabled = cap.kind === 'not-ready'
                 return <button key={pkg.packageId} className="pkg" data-cap={cap.kind} disabled={disabled} title={disabled ? cap.explain : undefined} onClick={() => openPackage(pkg)}>
                   <span className="pkg-caps">{cap.tags.map((tag) => <i key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</i>)}</span>

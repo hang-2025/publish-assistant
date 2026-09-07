@@ -9,6 +9,14 @@ import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { resolveInside, assertRootsIndependent, assertRootSetIndependent } from '../lib/security.mjs';
 import { CrossProcessLock } from '../lib/mutex.mjs';
+import { articleFromScanResult, articleFromPackageDetail } from '../domain/article.mjs';
+import { taskFromLegacyRecord } from '../domain/task.mjs';
+import { TASK_STATUS, VALIDATION_STATUS } from '../domain/status.mjs';
+import { InMemoryArticleRepository } from '../repositories/article-repository.mjs';
+import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
+import { ArticleService } from '../services/article-service.mjs';
+import { platformRegistry } from '../platforms/registry.mjs';
+import { createCommandRouter } from '../routes/command-router.mjs';
 
 /**
  * 阶段1A 测试：全部在系统临时目录中构造夹具，不读取、不修改真实文章目录与真实 Excel。
@@ -107,6 +115,49 @@ await makePackage(EXTERNAL, { images: ['1-e.png'], alts: ['E1'], htmlImgs: ['1-e
 await fs.symlink(EXTERNAL, path.join(UNPUB, '主流平台', 'junction-外部'), 'junction');
 
 // ---------- 单元测试：路径安全 ----------
+test('领域模型：扫描结果可投影为 Article，详情可在不改变旧响应的前提下补全', async () => {
+  const repository = new InMemoryArticleRepository();
+  const service = new ArticleService(repository);
+  const pkg = {
+    packageId: 'pkg-1234567890abcdef12345678',
+    relativePath: '主流平台/zhihu/雷电预警/2026-09-01/示例',
+    segments: ['主流平台', 'zhihu', '雷电预警', '2026-09-01', '示例'],
+    title: '示例文章', issueCount: 0, issues: [],
+  };
+  const projected = articleFromScanResult(pkg, { rootName: 'unpublished' });
+  assert.equal(projected.platform, 'zhihu');
+  assert.equal(projected.category, '雷电预警');
+  assert.equal(projected.validation.status, VALIDATION_STATUS.PENDING);
+  await service.indexScanResults([pkg], { rootName: 'unpublished' });
+  await service.enrichPackage({ ...pkg, html: '<p>正文</p>', images: [], issues: [] });
+  assert.equal((await repository.getById(pkg.packageId)).validation.status, VALIDATION_STATUS.VALID);
+  const blocked = articleFromPackageDetail({ ...pkg, issues: ['缺少 ALT'] }, projected);
+  assert.equal(blocked.validation.status, VALIDATION_STATUS.BLOCKED);
+});
+
+test('统一任务状态：旧模拟阶段只做 canonical 投影，不改旧任务记录', () => {
+  const legacy = { taskId: 'tsk_1_deadbeef', packageId: 'pkg-x', platform: 'eyzao.com', states: { draft: { stage: '等待用户最终提交（模拟）' } } };
+  const canonical = taskFromLegacyRecord(legacy);
+  assert.equal(canonical.id, legacy.taskId);
+  assert.equal(canonical.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(legacy.status, undefined);
+});
+
+test('平台 Registry：模拟能力统一，真实草稿/发布方法保持关闭', async () => {
+  assert.equal(platformRegistry.get('www.eyzao.com').id, 'eyzao.com');
+  assert.equal(platformRegistry.get('知乎').workflow, 'draft-simulation');
+  assert.equal(platformRegistry.get('toutiao').workflow, 'unsupported');
+  assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
+  assert.equal((await platformRegistry.get('eyzao.com').publish()).allowed, false);
+});
+
+test('Repository/Router：Excel 写入被拒绝，命令仅按白名单分发', async () => {
+  await assert.rejects(() => new ReadOnlyExcelRepository().write(), /禁止 Excel 写入/);
+  const router = createCommandRouter({ ping: async (payload) => ({ value: payload.value }) });
+  assert.deepEqual(await router.dispatch({ command: 'ping', payload: { value: 1 } }), { value: 1 });
+  await assert.rejects(() => router.dispatch({ command: 'publish', payload: {} }), /未知命令/);
+});
+
 test('resolveInside 拒绝 .. 与越界', async () => {
   await assert.rejects(() => resolveInside(UNPUB, '../外部目录'), /越界|\.\./);
   await assert.rejects(() => resolveInside(UNPUB, 'a/../../外部目录'), /越界|\.\./);

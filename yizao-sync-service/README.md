@@ -40,8 +40,25 @@ node server.mjs
 | `checkRealActionGate` | 查询真实动作闸门；当前真实上传/公开发布/Excel 写入/归档移动均返回不允许 |
 | `preflightPackage` | 发布前总预演：汇总发送快照、Excel 匹配、归档目标和真实动作闸门；只读不执行 |
 | `generateRealExecutionChecklist` | 生成真实执行验收单和单篇小样本验收模板；只读返回 Markdown，不创建任务、不写文件、不上传、不发布、不登记、不归档 |
+| `getShareableConfigTemplate` / `importShareableConfigTemplate` | 导出/导入不含个人路径、令牌和扩展 ID 的团队规则 |
+| `previewArchiveGate` | 只读计算多平台共享包归档门槛，不移动文件 |
+| `confirmPublishedSimulated` | 只更新任务的模拟人工发布确认状态 |
+| `confirmExcelRegisteredSimulated` | 只更新任务的模拟登记确认状态，不写 Excel |
+| `confirmArchivedSimulated` | 只更新任务的模拟归档确认状态，不移动、复制或删除文件 |
 
 任何其他命令（包括 publish/archive 等）都会被白名单拒绝。
+
+## 架构分层
+
+- `server.mjs`：最小进程入口；
+- `routes/`：HTTP 安全边界与白名单命令分发；
+- `services/`：兼容应用层和 Article 转换服务；
+- `domain/`：统一 Article、Task 和生命周期状态；
+- `platforms/`：模拟/未支持 Platform Adapter Registry；
+- `repositories/`：内存 Article、JSON Task、只读 Excel 抽象；
+- `lib/`：既有扫描、快照、任务、Excel、锁和路径安全能力。
+
+完整说明见仓库根目录 `ARCHITECTURE.md`。
 
 ## 安全边界
 

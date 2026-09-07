@@ -17,6 +17,7 @@
 
 ## 目录
 
+- `ARCHITECTURE.md`：领域模型、平台 Adapter、Repository、任务状态和安全边界。
 - `yizao-sync-service`：仅绑定 `127.0.0.1:8788` 的本地服务，负责受控扫描、预览、任务模拟与只读验收材料。
 - `wechatsync-source/Wechatsync-2`：Chrome 扩展源码。原始 GPL 许可证位于该目录的 `LICENSE`。
 - `outputs/统一发布助手-PRD-v0.1-待确认.md`：产品需求草案。
