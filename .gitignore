@@ -25,6 +25,8 @@
 !/outputs/stage3-zhihu-local-acceptance-guide.md
 !/outputs/publish-assistant-stage3-zhihu-acceptance.zip
 !/outputs/publish-assistant-stage3-zhihu-acceptance.zip.sha256
+!/outputs/publish-assistant-stage3-zhihu-html-fidelity-v3.zip
+!/outputs/publish-assistant-stage3-zhihu-html-fidelity-v3.zip.sha256
 
 # 截图回归产物可由测试重新生成，不提交到源码仓库。
 /wechatsync-source/Wechatsync-2/workbench-*.png

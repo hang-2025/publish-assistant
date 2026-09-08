@@ -233,8 +233,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           onDraftStage: reportStage,
           draftAuthorization: { action: 'saveDraft', platform: 'zhihu', taskId, snapshotId },
         })
-        if (!result.success || !result.draftOnly || !result.readBackVerified) {
-          throw new Error(result.error || '知乎草稿保存或回读失败')
+        if (!result.success || !result.draftOnly || !result.readBackVerified || !result.fidelityVerified) {
+          const error = result.error || '知乎草稿已保存但 HTML 内容保真校验失败，不能标记 Stage 3 verified；请人工检查草稿且不要重复点击'
+          await callLocalService('failZhihuDraft', { taskId, error, fidelityReport: result.fidelityReport }).catch(() => {})
+          return { error, result }
         }
         await callLocalService('completeZhihuDraft', { taskId, result })
         return { result }

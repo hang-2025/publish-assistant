@@ -21,7 +21,7 @@ Local Files / read-only Excel / Future Database
 - `platforms` 是服务端 Platform Adapter Registry。知乎 Adapter 承接受保护的任务/闸门协调；其他 Adapter 仍只描述能力并承接模拟入口。
 - `repositories` 隔离 Article、Task 和 Excel 存储。当前 Article 为内存投影，Task 继续使用 JSON，Excel 只读。
 
-原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。Stage 3 仅复用其中的知乎 Adapter：`saveDraft()` 创建、上传、保存并回读草稿，`publish()` 明确拒绝公开发布。其他网络 Adapter 不等于 Workbench 已启用真实能力。
+原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。Stage 3 仅复用其中的知乎 Adapter：`saveDraft()` 创建、上传、保存并回读草稿，`publish()` 明确拒绝公开发布。`packages/core/src/article/canonical.ts` 在平台 Adapter 之前把发布包 HTML 解析为可复用 Canonical Article 块模型，并负责语义渲染、`Caption = HTML img.alt` 策略与平台回读 Fidelity Report；其他网络 Adapter 不等于 Workbench 已启用真实能力。
 
 ## 2. Article 生命周期
 
@@ -109,7 +109,7 @@ pending → validating → ready → running
 
 ## 7. 后续路线
 
-当前 Stage 3 下一步是用一个专用知乎测试账号和一篇非敏感小样本完成人工验收。在此之前不得把 capability 标为已验证。
+当前 Stage 3 下一步是用 Windows v3 验收包、一个专用知乎测试账号和一篇非敏感 HTML 小样本完成人工验收。草稿 ID、标题或非空正文本身都不是完成证据；必需保真项还必须全部 PASS。在此之前不得把 capability 标为已验证。
 
 再下一阶段：人工确认后的发布登记。将正式 URL、人工确认来源和状态证据纳入任务记录。
 

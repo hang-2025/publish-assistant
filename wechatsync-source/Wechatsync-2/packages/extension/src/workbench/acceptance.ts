@@ -1,4 +1,5 @@
-export const EXTENSION_BUILD_ID = 'stage3-zhihu-acceptance-v2'
+export const EXTENSION_BUILD_ID = 'stage3-zhihu-html-fidelity-v3'
+export const ACCEPTANCE_PACKAGE_VERSION = 3
 export const EXPECTED_SERVICE_VERSION = '0.3.0-stage3-zhihu-draft'
 export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
 
@@ -21,10 +22,11 @@ export function serviceCompatibility(info: ServiceHealth | null | undefined) {
   if (info?.build?.id !== EXTENSION_BUILD_ID || info?.build?.extensionBuildId !== EXTENSION_BUILD_ID) {
     reasons.push(`验收构建不匹配（需要 ${EXTENSION_BUILD_ID}）`)
   }
+  if (info?.build?.packageVersion !== ACCEPTANCE_PACKAGE_VERSION) reasons.push(`验收包版本不匹配（需要 v${ACCEPTANCE_PACKAGE_VERSION}）`)
   return { ok: reasons.length === 0, reasons }
 }
 
-const REQUIRED_CHECKS = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'draft-gate', 'publish-gate']
+const REQUIRED_CHECKS = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'html-fidelity-source', 'draft-gate', 'publish-gate']
 export function acceptanceChecksPassed(checks: Array<{ key: string; ok: boolean }>) {
   const byKey = new Map(checks.map((item) => [item.key, item.ok]))
   return REQUIRED_CHECKS.every((key) => byKey.get(key) === true)
@@ -46,6 +48,9 @@ export interface AcceptanceEvidenceInput {
   draftUrl: string
   draftOnly: boolean
   readBackVerified: boolean
+  fidelityVerified: boolean
+  fidelityOverall: 'PASS' | 'DEGRADED' | 'UNSUPPORTED' | 'FAIL'
+  fidelitySummary: { pass: number; degraded: number; unsupported: number; fail: number }
   finalTaskStatus: string
   saveDraftDeniedBeforeConfirmation: boolean
   publishDenied: boolean
@@ -55,7 +60,7 @@ export interface AcceptanceEvidenceInput {
 export function buildAcceptanceEvidence(input: AcceptanceEvidenceInput) {
   return {
     schema: 'yizao-stage3-zhihu-acceptance-evidence',
-    version: 1,
+    version: 2,
     acceptanceId: `acceptance-${input.taskId}-${input.snapshotId.slice(-12)}`,
     timestamp: input.timestamp,
     serviceVersion: input.serviceVersion,
@@ -74,7 +79,9 @@ export function buildAcceptanceEvidence(input: AcceptanceEvidenceInput) {
       url: input.draftUrl,
       draftOnly: input.draftOnly,
       readBackVerified: input.readBackVerified,
+      fidelityVerified: input.fidelityVerified,
     },
+    fidelity: { overall: input.fidelityOverall, summary: input.fidelitySummary },
     finalTaskStatus: input.finalTaskStatus,
     safetyGates: {
       saveDraftDeniedBeforeConfirmation: input.saveDraftDeniedBeforeConfirmation,

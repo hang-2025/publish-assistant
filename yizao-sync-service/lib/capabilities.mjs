@@ -93,7 +93,7 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     name: '知乎',
     group: '主流平台',
     status: 'guarded-draft-unverified',
-    currentActions: ['只读扫描', '扩展本地草稿流程模拟', '受保护的单篇保存草稿实现（待真实账号人工验收）'],
+    currentActions: ['只读扫描', '扩展本地草稿流程模拟', '受保护的单篇 HTML 保真草稿实现（待真实账号人工验收）'],
     plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
     realActionPolicy: {
       upload: 'not-supported-as-standalone-action',
@@ -102,8 +102,8 @@ const LEGACY_PLATFORM_CAPABILITIES = [
       excelWrite: 'requires-explicit-authorization',
       archiveMove: 'requires-explicit-authorization',
     },
-    evidence: ['自动测试覆盖登录失败、保存后回读、重复任务、快照变化、图片失败与重启恢复'],
-    risks: ['尚未使用专用知乎测试账号完成真实草稿人工验收，因此 verified/saveDraft 仍为 false'],
+    evidence: ['自动测试覆盖 Canonical HTML、Caption=img.alt、平台回读保真、登录失败、重复任务、快照变化、图片失败与重启恢复'],
+    risks: ['尚未使用专用知乎测试账号确认平台对各语义块与 200 字 Caption 验收策略的实际表现，因此 verified/saveDraft 仍为 false'],
   },
   {
     id: 'sohu',

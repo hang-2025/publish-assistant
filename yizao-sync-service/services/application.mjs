@@ -464,6 +464,7 @@ function sanitizeTask(t) {
     snapshot: t.snapshot || null,
     status: t.status || '',
     draftResult: t.draftResult || null,
+    fidelityFailure: t.fidelityFailure || null,
     runState: t.runState,
     draft: t.states?.draft || {},
     publish: t.states?.publish || {},
@@ -519,7 +520,7 @@ async function cmdCompleteZhihuDraft(payload) {
 }
 
 async function cmdFailZhihuDraft(payload) {
-  assertAllowedKeys(payload || {}, ['taskId', 'error']);
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
   return { mode: 'zhihu-draft', task: sanitizeTask(await zhihuDraftService.fail(payload || {})) };
 }
 

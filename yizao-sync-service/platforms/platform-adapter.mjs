@@ -97,8 +97,10 @@ export const GUARDED_DRAFT_CAPABILITIES = Object.freeze({
   saveDraft: false,
   publish: false,
   autoPublish: false,
-  imageAlt: true,
-  visibleCaption: false,
+  imageAlt: false,
+  visibleCaption: true,
+  captionSource: 'html-img-alt',
+  htmlFidelityValidation: true,
   verified: false,
   implementationAvailable: true,
 });

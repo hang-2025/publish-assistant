@@ -44,6 +44,16 @@ function snapshot(version = 'a'.repeat(64)) {
   };
 }
 
+function fidelityReport(overrides = {}) {
+  const required = ['title', 'main-block-order', 'inline-emphasis', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
+  return {
+    schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+    summary: { pass: 12, degraded: 0, unsupported: 0, fail: 0 },
+    checks: required.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
+    ...overrides,
+  };
+}
+
 async function fixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage3-'));
   const store = new TaskStore(path.join(dir, 'tasks'));
@@ -84,13 +94,44 @@ test('Zhihu draft task follows durable happy path and blocks duplicate', async (
   await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.FILLING });
   await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.SAVING_DRAFT });
   const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
-    success: true, draftOnly: true, readBackVerified: true, postId: '12345', postUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '12345', postUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
   } });
   assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
   assert.equal(done.draftResult.readBackVerified, true);
+  assert.equal(done.draftResult.fidelityVerified, true);
   assert.equal(done.states.publish.status, '未发布');
   assert.equal(done.states.excel.status, '未登记');
   assert.equal(done.states.archive.status, '未归档');
+});
+
+test('draft saved without required fidelity cannot become draft_saved', async (t) => {
+  const f = await fixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  const failure = fidelityReport({ overall: 'FAIL', fidelityVerified: false, summary: { pass: 8, degraded: 0, unsupported: 0, fail: 1 } });
+  failure.checks = failure.checks.map((check) => check.key === 'image-order' ? { ...check, status: 'FAIL', detail: '顺序不一致' } : check);
+  await assert.rejects(() => f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: false,
+    fidelityReport: failure,
+    postId: '12345', postUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
+  } }), /内容保真/);
+  assert.notEqual((await f.store.getTask(prepared.task.taskId)).status, TASK_STATUS.DRAFT_SAVED);
+  const stopped = await f.service.fail({ taskId: prepared.task.taskId, error: '保真失败', fidelityReport: failure });
+  assert.equal(stopped.status, TASK_STATUS.FAILED);
+  assert.equal(stopped.fidelityFailure.overall, 'FAIL');
+  assert.equal(stopped.fidelityFailure.checks.find((check) => check.key === 'image-order').status, 'FAIL');
+});
+
+test('fidelityVerified flag cannot replace the complete required check set', async (t) => {
+  const f = await fixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  await assert.rejects(() => f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    fidelityReport: fidelityReport({ checks: [{ key: 'title', status: 'PASS', required: true, detail: '一致' }] }),
+    postId: '12345', postUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
+  } }), /缺少必需 PASS/);
 });
 
 test('source mutation and unverified save stop without draft_saved', async (t) => {

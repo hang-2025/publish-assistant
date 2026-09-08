@@ -6,6 +6,7 @@ import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
+import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
 const requireCore = createRequire(resolve(process.cwd(), '../core/package.json'))
 const JSZip = requireCore('jszip')
 
@@ -50,6 +51,7 @@ describe('guarded Zhihu draft adapter', () => {
     expect(result.success).toBe(true)
     expect(result.draftOnly).toBe(true)
     expect(result.readBackVerified).toBe(true)
+    expect(result.fidelityVerified).toBe(true)
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
   })
 
@@ -63,6 +65,24 @@ describe('guarded Zhihu draft adapter', () => {
     const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization })
     expect(result.success).toBe(false)
     expect(result.readBackVerified).not.toBe(true)
+  })
+
+  it('writes visible Caption from HTML img.alt and verifies it on readback', async () => {
+    let patchedContent = ''
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.endsWith('/api/articles/drafts') && options?.method === 'POST') return new Response(JSON.stringify({ id: '24680' }), { status: 200 })
+      if (url.endsWith('/24680/draft') && options?.method === 'PATCH') {
+        patchedContent = JSON.parse(String(options.body)).content
+        return new Response(null, { status: 204 })
+      }
+      if (url.endsWith('/24680/draft') && options?.method === 'GET') return new Response(JSON.stringify({ id: '24680', title: '配图测试', content: patchedContent }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({ title: '配图测试', html: '<p>前文</p><img src="https://pic4.zhimg.com/test.png" alt="来自 HTML 的图注"><p>后文</p>', markdown: '' }, { draftOnly: true, draftAuthorization })
+    expect(patchedContent).toContain('<figcaption>来自 HTML 的图注</figcaption>')
+    expect(result.fidelityVerified).toBe(true)
+    expect(result.fidelityReport?.checks.find((check) => check.key === 'caption-equals-html-alt')?.status).toBe('PASS')
   })
 
   it('rejects saveDraft without a task-bound local authorization', async () => {
@@ -82,7 +102,7 @@ describe('Stage 3 acceptance safety', () => {
     name: 'yizao-sync-service',
     version: '0.3.0-stage3-zhihu-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 2, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 3, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -90,10 +110,11 @@ describe('Stage 3 acceptance safety', () => {
     expect(serviceCompatibility({ ...compatibleHealth, version: 'old-service' }).ok).toBe(false)
     expect(serviceCompatibility({ ...compatibleHealth, protocol: { name: 'yizao-local-service', version: 1 } }).ok).toBe(false)
     expect(serviceCompatibility({ ...compatibleHealth, build: { ...compatibleHealth.build, id: 'old-extension' } }).ok).toBe(false)
+    expect(serviceCompatibility({ ...compatibleHealth, build: { ...compatibleHealth.build, packageVersion: 2 } }).ok).toBe(false)
   })
 
   it('requires every preflight acceptance check', () => {
-    const keys = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'draft-gate', 'publish-gate']
+    const keys = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'html-fidelity-source', 'draft-gate', 'publish-gate']
     expect(acceptanceChecksPassed(keys.map((key) => ({ key, ok: true })))).toBe(true)
     expect(acceptanceChecksPassed(keys.map((key) => ({ key, ok: key !== 'token' })))).toBe(false)
     expect(acceptanceChecksPassed(keys.filter((key) => key !== 'login').map((key) => ({ key, ok: true })))).toBe(false)
@@ -103,10 +124,11 @@ describe('Stage 3 acceptance safety', () => {
     const evidence = buildAcceptanceEvidence({
       timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
       protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
-      extensionVersion: '2.0.9.2', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      extensionVersion: '2.0.9.3', articleId: 'pkg-safe', packageId: 'pkg-safe',
       snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
       taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
       draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
+      fidelityVerified: true, fidelityOverall: 'DEGRADED', fidelitySummary: { pass: 11, degraded: 1, unsupported: 0, fail: 0 },
       saveDraftDeniedBeforeConfirmation: true, publishDenied: true,
     })
     const json = JSON.stringify(evidence).toLowerCase()
@@ -120,6 +142,60 @@ describe('Stage 3 acceptance safety', () => {
     expect(evidence.safetyGates.publicPublishEnabled).toBe(false)
     for (const forbidden of ['title', 'body', 'content', 'cookie', 'token', 'authorization', 'account', 'profile', 'excelpath', 'filepath', 'absolutepath']) expect(keys).not.toContain(forbidden)
     for (const forbiddenValue of ['bearer ', 'c:\\users\\', 'chrome profile']) expect(json).not.toContain(forbiddenValue)
+  })
+})
+
+describe('canonical publishing HTML fidelity', () => {
+  const sourceHtml = '<h1>主标题</h1><p>第一段 <strong>加粗</strong> <a href="https://example.com">链接</a></p><figure><img src="data:image/png;base64,AAAA" alt="现场图一"><figcaption>旧图注</figcaption></figure><h2>小节</h2><ul><li>甲</li><li>乙</li></ul><blockquote>引用</blockquote><table><tbody><tr><td>A</td><td>B</td></tr></tbody></table><img src="data:image/png;base64,BBBB" alt="现场图二"><p>末段</p>'
+
+  it('parses semantic blocks plus image order and anchors from canonical HTML', () => {
+    const article = parseCanonicalArticle(sourceHtml, '测试标题')
+    expect(article.blocks.map((block) => block.kind)).toEqual(['heading', 'paragraph', 'image', 'heading', 'list', 'quote', 'table', 'image', 'paragraph'])
+    expect(article.images.map((image) => [image.order, image.anchor, image.alt, image.captionCandidate])).toEqual([
+      [1, 2, '现场图一', '现场图一'], [2, 6, '现场图二', '现场图二'],
+    ])
+    const rendered = renderCanonicalArticle(article)
+    expect(rendered).toContain('<figcaption>现场图一</figcaption>')
+    expect(rendered).not.toContain('旧图注')
+  })
+
+  it('blocks overlong captions without silently truncating', () => {
+    const longAlt = '图'.repeat(ZHIHU_CAPTION_POLICY_MAX_LENGTH + 1)
+    expect(() => assertCaptionPolicy(parseCanonicalArticle(`<img src="x" alt="${longAlt}">`, '标题'))).toThrow('不会静默截断')
+  })
+
+  it('blocks image nesting whose anchor cannot be represented safely', () => {
+    expect(() => assertCaptionPolicy(parseCanonicalArticle('<p>前文<span><img src="x" alt="嵌套图"></span>后文</p>', '标题'))).toThrow('不能安全保持锚点')
+  })
+
+  it('reports PASS, DEGRADED and FAIL with required-policy semantics', () => {
+    const source = parseCanonicalArticle(sourceHtml, '测试标题')
+    const rendered = renderCanonicalArticle(source)
+    expect(validateCanonicalFidelity(source, rendered, '测试标题').overall).toBe('PASS')
+
+    const emphasisFailure = validateCanonicalFidelity(source, rendered.replace('<strong>加粗</strong>', '加粗'), '测试标题')
+    expect(emphasisFailure.fidelityVerified).toBe(false)
+
+    for (const changed of [
+      rendered.replace('<ul>', '<p>').replace('</ul>', '</p>'),
+      rendered.replace('href="https://example.com"', 'href="https://example.net"'),
+      rendered.replace(/<table[\s\S]*?<\/table>/, '<p>AB</p>'),
+    ]) {
+      const degraded = validateCanonicalFidelity(source, changed, '测试标题')
+      expect(degraded.overall).toBe('DEGRADED')
+      expect(degraded.fidelityVerified).toBe(true)
+    }
+
+    for (const changed of [
+      rendered.replace(/<figure>[\s\S]*?<\/figure>/, ''),
+      rendered.replace(/(<figure>[\s\S]*?<\/figure>)/, '$1$1'),
+      rendered.replace('<figcaption>现场图一</figcaption>', '<figcaption>错误图注</figcaption>'),
+      rendered.replace(/(<figure>[\s\S]*?<\/figure>)([\s\S]*)(<figure>[\s\S]*?<\/figure>)/, '$3$2$1'),
+    ]) {
+      const report = validateCanonicalFidelity(source, changed, '测试标题')
+      expect(report.overall).toBe('FAIL')
+      expect(report.fidelityVerified).toBe(false)
+    }
   })
 })
 

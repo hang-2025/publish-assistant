@@ -6,6 +6,12 @@ import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
 import { createLogger } from '../../lib/logger'
 import md5Lib from 'js-md5'
+import {
+  assertCaptionPolicy,
+  parseCanonicalArticle,
+  renderCanonicalArticle,
+  validateCanonicalFidelity,
+} from '../../article/canonical'
 
 const logger = createLogger('Zhihu')
 
@@ -107,6 +113,12 @@ export class ZhihuAdapter extends CodeAdapter {
       logger.info('Starting guarded draft save...')
       await options?.onDraftStage?.('running')
 
+      // The publishing-package HTML is the canonical source. Do not fall back to
+      // Markdown/Word or couple the platform adapter to arbitrary source DOM.
+      const canonical = parseCanonicalArticle(article.html || '', article.title)
+      if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
+      assertCaptionPolicy(canonical)
+
       // 1. 创建草稿
       const createResponse = await this.runtime.fetch('https://zhuanlan.zhihu.com/api/articles/drafts', {
         method: 'POST',
@@ -147,7 +159,7 @@ export class ZhihuAdapter extends CodeAdapter {
 
       // 2. 使用预处理好的 HTML（Content Script 已处理代码块、图片、特殊标签等）
       // 知乎使用 HTML 格式
-      let content = article.html || ''
+      let content = renderCanonicalArticle(canonical)
 
       // 3. 处理图片（section → div 转换已在 preprocessConfig 中处理）
       await options?.onDraftStage?.('uploading')
@@ -191,26 +203,33 @@ export class ZhihuAdapter extends CodeAdapter {
 
       logger.debug('Draft updated, status:', updateResponse.status)
 
-      // 6. 保存后回读。没有可核对的草稿 ID、标题或正文时绝不报告成功。
+      // 6. 保存后回读。草稿 ID 存在不等于内容保真通过。
       const readBackResponse = await this.runtime.fetch(
         `https://zhuanlan.zhihu.com/api/articles/${draftId}/draft`,
         { method: 'GET', credentials: 'include', headers: { 'x-requested-with': 'fetch' } }
       )
       if (!readBackResponse.ok) throw new Error(`草稿回读失败: ${readBackResponse.status}`)
       const readBack = await readBackResponse.json() as { id?: string | number; title?: string; content?: string }
-      if (String(readBack.id || '') !== String(draftId)
-        || String(readBack.title || '').trim() !== article.title.trim()
-        || !String(readBack.content || '').trim()) {
+      if (String(readBack.id || '') !== String(draftId) || !String(readBack.content || '').trim()) {
         throw new Error('草稿回读内容与本次保存不一致')
       }
 
       const draftUrl = `https://zhuanlan.zhihu.com/p/${draftId}/edit`
+      const fidelityReport = validateCanonicalFidelity(canonical, String(readBack.content || ''), String(readBack.title || ''))
+      fidelityReport.checks.push(
+        { key: 'trusted-draft-url', status: 'PASS', required: true, detail: '知乎 HTTPS 编辑草稿 URL' },
+        { key: 'draft-only', status: 'PASS', required: true, detail: '仅保存草稿，未调用公开发布' },
+        { key: 'read-back-verified', status: 'PASS', required: true, detail: '已从平台草稿接口回读' },
+      )
+      fidelityReport.summary.pass += 3
 
       return this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
         readBackVerified: true,
+        fidelityVerified: fidelityReport.fidelityVerified,
+        fidelityReport,
       })
     }).catch((error) => this.createResult(false, {
       error: (error as Error).message,
@@ -226,11 +245,8 @@ export class ZhihuAdapter extends CodeAdapter {
     // 1. 转换表格格式 - 知乎 Draft.js 编辑器需要特定格式
     result = this.transformTables(result)
 
-    // 2. 图片格式 - 知乎需要 figure 包裹
-    result = result.replace(
-      /<img([^>]+)src="([^"]+)"([^>]*)>/gi,
-      '<figure><img$1src="$2"$3></figure>'
-    )
+    // 2. Canonical renderer 已把图片放入 figure，并按 HTML alt 生成 figcaption。
+    // 此处不得再次包裹，否则会破坏图片锚点和回读校验。
 
     // 3. 代码块格式
     result = result.replace(

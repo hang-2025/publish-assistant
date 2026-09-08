@@ -1483,7 +1483,13 @@ test('Stage 3 HTTP：知乎草稿需确认、快照、顺序状态与回读证�
     assert.equal(progress.json.task.status, status);
   }
   const complete = await call({ command: 'completeZhihuDraft', payload: { taskId, result: {
-    success: true, draftOnly: true, readBackVerified: true,
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    fidelityReport: {
+      schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+      summary: { pass: 12, degraded: 0, unsupported: 0, fail: 0 },
+      checks: ['title', 'main-block-order', 'inline-emphasis', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'trusted-draft-url', 'draft-only', 'read-back-verified']
+        .map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
+    },
     postId: '12345', postUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
   } } });
   assert.equal(complete.json.task.status, 'waiting_confirmation');

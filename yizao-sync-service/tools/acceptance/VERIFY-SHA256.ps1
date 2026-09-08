@@ -11,6 +11,15 @@ if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
 }
 
 $failed = @()
+function Get-Sha256Hex([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+  }
+  finally { $stream.Dispose() }
+}
 foreach ($line in Get-Content -LiteralPath $manifest) {
   if (-not $line.Trim()) { continue }
   if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { $failed += "清单格式错误：$line"; continue }
@@ -21,7 +30,7 @@ foreach ($line in Get-Content -LiteralPath $manifest) {
     $failed += "路径越界：$relative"; continue
   }
   if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { $failed += "缺少文件：$relative"; continue }
-  $actual = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+  $actual = Get-Sha256Hex $target
   if ($actual -ne $expected) { $failed += "校验失败：$relative" }
 }
 

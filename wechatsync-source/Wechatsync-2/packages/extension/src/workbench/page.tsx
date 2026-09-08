@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { sanitizeHtml, previewDocument } from '../local-import/importer'
 import { call, health, ServiceAuthError, ServiceUnreachableError, setToken } from './service'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility, type ServiceHealth } from './acceptance'
+import { assertCaptionPolicy, parseCanonicalArticle, type FidelityReport } from '@wechatsync/core'
 import { confirmArchivedSimulated as confirmLocalArchivedSimulated, confirmExcelRegisteredSimulated as confirmLocalExcelRegisteredSimulated, confirmPublishedSimulated as confirmLocalPublishedSimulated, createSimulatedTask, markPackageIdsStale, refreshTasks, removeTask as removeSimTask, restoreTasks, type SimTask } from './tasks'
 
 /**
@@ -80,7 +81,7 @@ function draftPreview(platform: { id: string; name: string }): Capability {
 }
 function guardedDraft(platform: { id: string; name: string }): Capability {
   return {
-    kind: 'guarded-draft', label: '受保护的真实草稿', platform,
+    kind: 'guarded-draft', label: '一键发布（仅保存草稿）', platform,
     tags: ['单篇', '保存草稿', '禁止公开发布'],
     explain: '仅在当次勾选确认、服务端不可变快照复核和知乎登录检查通过后保存一篇草稿；不会公开发布、写 Excel 或移动文件。',
   }
@@ -175,7 +176,8 @@ function buildPreview(detail: PkgDetail): { html: string; missing: string[] } {
     const matches = byName.get(name.toLowerCase()) || []
     if (matches.length === 1) {
       img.setAttribute('src', matches[0].dataUrl)
-      if (matches[0].alt) img.setAttribute('alt', matches[0].alt)
+      // `02-后台一键复制正文.html` is canonical. The image manifest may
+      // validate conflicts, but it must never overwrite the source img.alt.
     } else {
       missing.push(name || '(无地址)')
       img.removeAttribute('src')
@@ -195,7 +197,8 @@ interface ServerTask {
   archive: { status: string; detail: string; updatedAt: string }
   createdAt: string; updatedAt: string; finishedAt?: string
   status?: string
-  draftResult?: { postId: string; postUrl: string; readBackVerified: boolean; savedAt: string } | null
+  draftResult?: { postId: string; postUrl: string; readBackVerified: boolean; fidelityVerified: boolean; fidelity?: FidelityReport; savedAt: string } | null
+  fidelityFailure?: FidelityReport | null
 }
 
 interface Gate { executable: boolean; blocks: string[]; warnings?: string[] }
@@ -895,6 +898,15 @@ export function Workbench() {
       } else {
         mark('snapshot', 'snapshot executable', false, '尚未选择知乎文章')
       }
+      try {
+        if (!preview) throw new Error('发布包没有可用的 HTML 正文')
+        const canonical = parseCanonicalArticle(preview.html, detail?.title || '')
+        if (!canonical.blocks.length) throw new Error('HTML 没有可发布正文块')
+        assertCaptionPolicy(canonical)
+        mark('html-fidelity-source', 'canonical HTML / Caption 策略', true, `${canonical.blocks.length} 个语义块 · ${canonical.images.length} 张图 · Caption=HTML img.alt`)
+      } catch (e) {
+        mark('html-fidelity-source', 'canonical HTML / Caption 策略', false, errMessage(e))
+      }
 
       try {
         const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'saveDraft', platform: 'zhihu' })
@@ -909,12 +921,12 @@ export function Workbench() {
         mark('publish-gate', 'publish 始终 deny', false, errMessage(e))
       }
     } finally {
-      const ordered = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'draft-gate', 'publish-gate']
+      const ordered = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'html-fidelity-source', 'draft-gate', 'publish-gate']
         .map((key) => checks.get(key) || { key, label: key, ok: false, detail: '检查未完成' })
       setAcceptanceChecks(ordered)
       setAcceptanceBusy(false)
     }
-    return { ok: checks.size === 9 && [...checks.values()].every((item) => item.ok), preflight: checked, checks }
+    return { ok: checks.size === 10 && [...checks.values()].every((item) => item.ok), preflight: checked, checks }
   }
 
   async function saveZhihuDraft() {
@@ -943,7 +955,7 @@ export function Workbench() {
         payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
       }) as { result?: Record<string, unknown>; error?: string }
       if (response?.error || !response?.result) throw new Error(response?.error || '知乎草稿 Adapter 未返回结果')
-      const result = response.result as { postId?: string; postUrl?: string; draftOnly?: boolean; readBackVerified?: boolean }
+      const result = response.result as { postId?: string; postUrl?: string; draftOnly?: boolean; readBackVerified?: boolean; fidelityVerified?: boolean; fidelityReport?: FidelityReport }
       const completed = await call<{ task: ServerTask }>('getTask', { taskId })
       const info = serviceInfo || await health()
       const evidence = buildAcceptanceEvidence({
@@ -953,13 +965,16 @@ export function Workbench() {
         snapshotId, contentHash: checked.snapshot.contentVersion, imageCount: checked.snapshot.imageCount,
         taskId, postId: String(result.postId || ''), draftUrl: String(result.postUrl || ''),
         draftOnly: result.draftOnly === true, readBackVerified: result.readBackVerified === true,
+        fidelityVerified: result.fidelityVerified === true,
+        fidelityOverall: result.fidelityReport?.overall || 'FAIL',
+        fidelitySummary: result.fidelityReport?.summary || { pass: 0, degraded: 0, unsupported: 0, fail: 1 },
         finalTaskStatus: completed.task?.status || completed.task?.draft?.stage || 'unknown',
         saveDraftDeniedBeforeConfirmation: acceptance.checks.get('draft-gate')?.ok === true,
         publishDenied: acceptance.checks.get('publish-gate')?.ok === true,
       })
       setAcceptanceEvidence(evidence)
       await chrome.storage.local.set({ [ACCEPTANCE_EVIDENCE_KEY]: evidence })
-      setZhihuNote('知乎草稿已保存并回读确认。请在任务中心打开草稿检查；不会自动公开发布。')
+      setZhihuNote(`知乎：草稿已保存；HTML 保真 ${result.fidelityReport?.overall || 'PASS'}。请在任务中心打开草稿检查；不会自动公开发布。`)
       setZhihuConfirmed(false)
       await reloadServerTasks()
       setTab('tasks')
@@ -1349,12 +1364,12 @@ export function Workbench() {
           </>}
 
           {openCap?.kind === 'guarded-draft' && <>
-            <h3>知乎单篇真实草稿（Stage 3）</h3>
-            <p className="hint">流程：只读预检 → 锁定不可变快照 → 检查当前 Chrome 知乎登录 → 上传图片并填写 → 保存草稿 → 平台回读确认。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
+            <h3>一键发布到知乎（仅保存草稿 · Stage 3）</h3>
+            <p className="hint">流程：读取发布包 HTML → 只读预检 → Canonical Article 解析 → 锁定不可变快照 → 检查当前 Chrome 知乎登录 → 原位置上传图片 → Caption=HTML img.alt → 保存草稿 → 平台回读 → Fidelity Report。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
             <div className="acceptance-checks">
               <div className="row">
                 <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy}>{acceptanceBusy ? '正在执行验收前自检…' : '运行 Preflight Acceptance Check'}</button>
-                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '9/9 自检通过，可进行当次确认。' : '真实草稿操作必须先通过全部 9 项自检。'}</span>
+                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '10/10 自检通过，可进行当次确认。' : '真实草稿操作必须先通过全部 10 项自检。'}</span>
               </div>
               {!!acceptanceChecks.length && <ul>{acceptanceChecks.map((item) => <li key={item.key} data-check={item.ok ? 'pass' : 'fail'}>
                 <strong>{item.ok ? 'PASS' : 'BLOCK'} · {item.label}</strong><small>{item.detail}</small>
@@ -1366,7 +1381,7 @@ export function Workbench() {
             </label>
             <div className="row">
               <button className="secondary" onClick={runPreflight} disabled={preflightBusy}>{preflightBusy ? '正在预检…' : '先运行只读预检'}</button>
-              <button onClick={saveZhihuDraft} disabled={!compatibility.ok || !acceptanceReady || !zhihuConfirmed || zhihuBusy}>{zhihuBusy ? '正在保存并回读…' : '保存一篇知乎草稿'}</button>
+              <button onClick={saveZhihuDraft} disabled={!compatibility.ok || !acceptanceReady || !zhihuConfirmed || zhihuBusy}>{zhihuBusy ? '正在保存并进行保真回读…' : '一键发布（知乎仅保存草稿）'}</button>
               <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>
               <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成小样本验收材料（只读）'}</button>
             </div>
@@ -1520,7 +1535,16 @@ export function Workbench() {
           </div>}
           {t.mode === 'zhihu-draft' && t.draftResult?.postUrl && <div className="confirm-row">
             <button onClick={() => chrome.tabs.create({ url: t.draftResult!.postUrl })}>打开知乎草稿</button>
-            <span className="hint">已回读确认草稿 ID：{t.draftResult.postId}；公开发布仍由用户在知乎页面自行决定。</span>
+            <span className="hint">知乎：草稿已保存 · 保真 {t.draftResult.fidelity?.overall || 'PASS'} · 草稿 ID：{t.draftResult.postId}；公开发布仍由用户在知乎页面自行决定。</span>
+          </div>}
+          {t.mode === 'zhihu-draft' && t.draftResult?.fidelity && <ul className="checklist" aria-label="Fidelity Report">{t.draftResult.fidelity.checks.map((check) => <li key={check.key}>
+            <strong>{check.status} · {check.key}{check.required ? '（必需）' : ''}</strong>：{check.detail}
+          </li>)}</ul>}
+          {t.mode === 'zhihu-draft' && t.fidelityFailure && <div className="warn">
+            <strong>Fidelity Report：{t.fidelityFailure.overall}（未标记 draft_saved）</strong>
+            <ul className="checklist">{t.fidelityFailure.checks.map((check) => <li key={check.key}>
+              <strong>{check.status} · {check.key}{check.required ? '（必需）' : ''}</strong>：{check.detail}
+            </li>)}</ul>
           </div>}
           <small>{t.draft.detail}</small>
           {t.publish?.detail && <small>{t.publish.detail}</small>}

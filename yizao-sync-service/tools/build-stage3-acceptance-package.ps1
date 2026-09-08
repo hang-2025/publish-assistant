@@ -16,7 +16,7 @@ $extensionDist = Join-Path $RepositoryRoot 'wechatsync-source\Wechatsync-2\packa
 $serviceRoot = Join-Path $RepositoryRoot 'yizao-sync-service'
 $guidePath = Join-Path $RepositoryRoot 'outputs\stage3-zhihu-local-acceptance-guide.md'
 $acceptanceTools = Join-Path $serviceRoot 'tools\acceptance'
-$packageName = 'publish-assistant-stage3-zhihu-acceptance'
+$packageName = 'publish-assistant-stage3-zhihu-html-fidelity-v3'
 $outputZip = Join-Path $OutputDirectory "$packageName.zip"
 $outputHash = "$outputZip.sha256"
 $readmeName = 'README-' + [string][char]0x9A8C + [string][char]0x6536 + '.md'
@@ -71,7 +71,7 @@ exit /b %errorlevel%
   @'
 @echo off
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\VERIFY-SHA256.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\VERIFY-SHA256.ps1" %*
 exit /b %errorlevel%
 '@ | Set-Content -LiteralPath (Join-Path $stageRoot 'VERIFY-SHA256.cmd') -Encoding ascii
 

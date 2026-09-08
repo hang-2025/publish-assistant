@@ -7,6 +7,8 @@
 当前代码进入 **Stage 3 知乎单篇草稿闭环（实现完成，真实账号验收待执行）**：
 
 - 只有知乎 `saveDraft` 在用户当次明确确认、不可变快照复核和当前 Chrome 登录检查通过后可执行；
+- 发布包 `02-后台一键复制正文.html` 是知乎草稿的 canonical source；复用 Canonical Article 块模型保持正文顺序与图片锚点，并按 `HTML img.alt` 生成可见 Caption；
+- 保存后必须回读并生成 Fidelity Report，标题/正文主块/图片数量、顺序、锚点与 Caption 等必需项全部通过后才可进入 `draft_saved`；
 - 知乎 `publish()` 与所有平台公开发布始终拒绝；
 - 不修改真实 Excel；
 - 不移动、删除或归档真实文章包；
