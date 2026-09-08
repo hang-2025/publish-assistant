@@ -33,6 +33,7 @@ export function createLocalApiServer({
   port,
   version,
   protocol,
+  build,
   maxBodyBytes,
   commandRouter,
   getToken,
@@ -58,7 +59,7 @@ export function createLocalApiServer({
       }
 
       if (req.method === 'GET' && req.url === '/api/health') {
-        send(res, 200, { ok: true, name: 'yizao-sync-service', version, protocol });
+        send(res, 200, { ok: true, name: 'yizao-sync-service', version, protocol, build });
         log(200);
         return;
       }

@@ -10,6 +10,7 @@ import { buildSendSnapshot, makeTaskKey } from '../lib/snapshot.mjs';
 import { TaskStore } from '../lib/tasks.mjs';
 import { classifyTaskId, previewRegistration } from '../lib/excel-mapping.mjs';
 import { checkRealActionGate, getCapabilities, PLATFORM_CAPABILITIES } from '../lib/capabilities.mjs';
+import { ACCEPTANCE_BUILD, LOCAL_PROTOCOL, SERVICE_VERSION } from '../lib/build-info.mjs';
 import { archiveGateForSharedPackage } from '../lib/archive-sim.mjs';
 import {
   SITE_KEYS, validSiteKey, buildPublishPreview, startSimulatedPublish,
@@ -75,9 +76,9 @@ const TOKEN_PATH = path.join(DATA_DIR, 'token');
 const TASK_DIR = path.join(DATA_DIR, 'tasks');
 const LOCK_DIR = path.join(DATA_DIR, 'locks');
 const PORT = Number(process.env.YIZ_PORT || (process.argv.includes('--port') ? process.argv[process.argv.indexOf('--port') + 1] : 8788));
-const VERSION = '0.3.0-stage3-zhihu-draft';
+const VERSION = SERVICE_VERSION;
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB：setConfig / 快照命令之外没有大载荷
-const PROTOCOL = { name: 'yizao-local-service', version: 2 };
+const PROTOCOL = LOCAL_PROTOCOL;
 const store = new TaskStore(TASK_DIR);
 const taskRepository = new TaskRepository(store);
 const articleRepository = new InMemoryArticleRepository();
@@ -1171,6 +1172,7 @@ const server = createLocalApiServer({
   port: PORT,
   version: VERSION,
   protocol: PROTOCOL,
+  build: ACCEPTANCE_BUILD,
   maxBodyBytes: MAX_BODY_BYTES,
   commandRouter,
   getToken: () => STATE.token,

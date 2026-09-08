@@ -28,7 +28,8 @@ import {
 import { checkSyncFrequency, recordSync } from '../lib/rate-limit'
 import { checkForUpdates, isUpdateDismissed } from '../lib/version-check'
 import { fetchRemoteConfig, fetchConfigIfNeeded } from '../lib/remote-config'
-import { call as callLocalService } from '../workbench/service'
+import { call as callLocalService, health as localServiceHealth } from '../workbench/service'
+import { EXTENSION_BUILD_ID, serviceCompatibility } from '../workbench/acceptance'
 
 const logger = createLogger('Background')
 
@@ -211,6 +212,14 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       if (!/^snap-[0-9a-f]{24}$/.test(snapshotId || '')) return { error: '无效的知乎草稿快照授权' }
       if (!/^tsk_[0-9]+_[0-9a-f]{8}$/.test(taskId || '')) return { error: '无效的知乎草稿任务' }
       try {
+        const serviceInfo = await localServiceHealth()
+        const compatibility = serviceCompatibility(serviceInfo)
+        if (!compatibility.ok) throw new Error(`验收包版本不匹配：${compatibility.reasons.join('；')}。请重新加载当前验收包。`)
+        const capabilities = await callLocalService<{ runtime?: { acceptanceBuildId?: string; requiredExtensionBuildId?: string } }>('getCapabilities')
+        if (capabilities.runtime?.acceptanceBuildId !== EXTENSION_BUILD_ID
+          || capabilities.runtime?.requiredExtensionBuildId !== EXTENSION_BUILD_ID) {
+          throw new Error('服务与扩展验收构建标识不匹配，请重新加载当前验收包')
+        }
         const auth = await checkPlatformAuth('zhihu')
         if (!auth.isAuthenticated) throw new Error(auth.error || '知乎未登录，请先在当前 Chrome 会话登录')
         const adapter = await getAdapter('zhihu')

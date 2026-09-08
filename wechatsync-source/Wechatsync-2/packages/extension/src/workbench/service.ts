@@ -7,6 +7,8 @@
  * - 401 时抛出 ServiceAuthError，由界面引导用户重新配对。
  */
 
+import type { ServiceHealth } from './acceptance'
+
 const DEFAULT_BASE = 'http://127.0.0.1:8788'
 const TOKEN_KEY = 'yizao_service_token'
 const BASE_KEY = 'yizao_service_base'
@@ -35,7 +37,7 @@ export async function setToken(token: string) {
   await chrome.storage.local.set({ [TOKEN_KEY]: token.trim().toLowerCase() })
 }
 
-export async function health(): Promise<{ ok: boolean; version: string; protocol: { name: string; version: number } }> {
+export async function health(): Promise<ServiceHealth> {
   try {
     const res = await fetch(`${await getServiceBase()}/api/health`)
     if (!res.ok) throw new Error(`health ${res.status}`)

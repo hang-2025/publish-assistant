@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { sanitizeHtml, previewDocument } from '../local-import/importer'
 import { call, health, ServiceAuthError, ServiceUnreachableError, setToken } from './service'
+import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility, type ServiceHealth } from './acceptance'
 import { confirmArchivedSimulated as confirmLocalArchivedSimulated, confirmExcelRegisteredSimulated as confirmLocalExcelRegisteredSimulated, confirmPublishedSimulated as confirmLocalPublishedSimulated, createSimulatedTask, markPackageIdsStale, refreshTasks, removeTask as removeSimTask, restoreTasks, type SimTask } from './tasks'
 
 /**
@@ -264,7 +265,23 @@ interface CapabilitiesResponse {
   requirementsBeforeRealActions: string[]
   actions?: Record<string, string>
   platforms: CapabilityPlatform[]
+  runtime?: {
+    serviceVersion: string
+    protocol: { name: string; version: number }
+    acceptanceBuildId: string
+    requiredExtensionBuildId: string
+  }
 }
+
+interface AcceptanceCheck {
+  key: string
+  label: string
+  ok: boolean
+  detail: string
+}
+
+type AcceptanceEvidence = ReturnType<typeof buildAcceptanceEvidence>
+const ACCEPTANCE_EVIDENCE_KEY = 'yizao_stage3_acceptance_evidence'
 
 // Compatibility catalog for initial render and older mocked services. Once
 // getCapabilities succeeds, the server-provided registry replaces this data.
@@ -328,6 +345,7 @@ interface PreflightResponse {
   snapshot?: {
     siteKey: string; platformName: string; account: string; finalAction: string
     gate: Gate; contentVersionShort: string; snapshotId: string; imageCount: number; occurrenceCount: number
+    contentVersion: string
   } | null
   registration: { configured: boolean; status: string; notice?: string; query?: Record<string, string>; preview?: ExcelRegistrationPreview['registration'] }
   archive: { configured: boolean; targetRoot?: string; targetPreview?: string; status: string; notice: string }
@@ -477,6 +495,7 @@ function taskSteps(input: { draft: string; publish: string; excel: string; archi
 
 export function Workbench() {
   const [serviceState, setServiceState] = useState<'checking' | 'ok' | 'unreachable' | 'unpaired'>('checking')
+  const [serviceInfo, setServiceInfo] = useState<ServiceHealth | null>(null)
   const [tokenInput, setTokenInput] = useState('')
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'library' | 'tasks' | 'platforms' | 'safety'>('library')
@@ -514,20 +533,35 @@ export function Workbench() {
   const [zhihuConfirmed, setZhihuConfirmed] = useState(false)
   const [zhihuBusy, setZhihuBusy] = useState(false)
   const [zhihuNote, setZhihuNote] = useState('')
+  const [acceptanceChecks, setAcceptanceChecks] = useState<AcceptanceCheck[]>([])
+  const [acceptanceBusy, setAcceptanceBusy] = useState(false)
+  const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidence | null>(null)
   const pollRef = useRef<number>()
   const archiveGroups = useMemo(() => archiveGroupsFromTasks(serverTasks, tasks), [serverTasks, tasks])
+  const compatibility = serviceCompatibility(serviceInfo)
+  const acceptanceReady = acceptanceChecksPassed(acceptanceChecks)
+  const extensionVersion = chrome.runtime?.getManifest?.().version || 'development-test'
 
   async function probeService() {
     setServiceState('checking')
     try {
-      await health()
+      const info = await health()
+      setServiceInfo(info)
       try { await call('getConfig'); setServiceState('ok') } catch (e) { setServiceState(e instanceof ServiceAuthError ? 'unpaired' : 'ok') }
     } catch {
+      setServiceInfo(null)
       setServiceState('unreachable')
     }
   }
 
   useEffect(() => { probeService() }, [])
+
+  useEffect(() => {
+    chrome.storage.local.get(ACCEPTANCE_EVIDENCE_KEY).then((stored) => {
+      const evidence = stored[ACCEPTANCE_EVIDENCE_KEY]
+      if (evidence?.schema === 'yizao-stage3-zhihu-acceptance-evidence') setAcceptanceEvidence(evidence)
+    })
+  }, [])
 
   // 模拟任务推进的轮询刷新（扩展本地知乎/搜狐草稿模拟）
   useEffect(() => {
@@ -590,7 +624,7 @@ export function Workbench() {
         platformValues: parsePlatformValues(platformValuesText),
         captionPolicy,
       })
-      setScans({}); setDetail(null); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote('')
+      setScans({}); setDetail(null); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
       await markPackageIdsStale()
       await loadConfig()
     } catch (e) { setError(errMessage(e)) }
@@ -616,7 +650,7 @@ export function Workbench() {
   }
 
   async function scan(root: 'unpublished' | 'published') {
-    setError(''); setScanning(root); setDetail(null); setDetailError(''); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote('')
+    setError(''); setScanning(root); setDetail(null); setDetailError(''); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
     try {
       const result = await call<{ packages: PkgSummary[] }>('scan', { root })
       setScans((prev) => ({ ...prev, [root]: result.packages }))
@@ -626,7 +660,7 @@ export function Workbench() {
 
   async function openPackage(pkg: PkgSummary) {
     if (!pkg.packageId) return
-    setDetail(null); setDetailError(''); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote('')
+    setDetail(null); setDetailError(''); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([]); setZhihuConfirmed(false)
     try {
       const currentCapabilities = capabilities || { phase: 'compatibility', realActionsEnabled: false, requirementsBeforeRealActions: [], platforms: FALLBACK_PLATFORM_CAPABILITIES }
       setOpenCap(capabilityFor(pkg.segments, currentCapabilities.platforms))
@@ -643,7 +677,8 @@ export function Workbench() {
     await setToken(tokenInput)
     tokenInput && setTokenInput('')
     try {
-      await health()
+      const info = await health()
+      setServiceInfo(info)
       await call('getConfig')
       setServiceState('ok')
     } catch (e) {
@@ -782,6 +817,18 @@ export function Workbench() {
     setChecklistNote(`验收材料已下载：${safeName}。该操作不会修改文章目录。`)
   }
 
+  function downloadAcceptanceEvidence() {
+    if (!acceptanceEvidence) return
+    const blob = new Blob([JSON.stringify(acceptanceEvidence, null, 2)], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${acceptanceEvidence.acceptanceId}.json`.replace(/[^a-z0-9._-]/gi, '_')
+    document.body.appendChild(link)
+    link.click(); link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
   // 知乎/搜狐：草稿流程模拟（扩展本地，不调用平台）。
   async function runDraftSimulation() {
     if (!detail || !openCap?.platform) return
@@ -793,15 +840,92 @@ export function Workbench() {
     setTasks(await refreshTasks()); setTab('tasks')
   }
 
+  async function runAcceptanceCheck() {
+    setAcceptanceBusy(true); setZhihuNote(''); setDetailError('')
+    const checks = new Map<string, AcceptanceCheck>()
+    const mark = (key: string, label: string, ok: boolean, detailText: string) => checks.set(key, { key, label, ok, detail: detailText })
+    let checked: PreflightResponse | null = null
+    try {
+      let info: ServiceHealth | null = null
+      try {
+        info = await health(); setServiceInfo(info)
+        mark('service', 'service reachable', true, `${info.version} · ${info.protocol.name}/${info.protocol.version}`)
+      } catch (e) {
+        mark('service', 'service reachable', false, errMessage(e))
+      }
+
+      let paired = false
+      let caps: CapabilitiesResponse | null = null
+      try {
+        await call('getConfig'); paired = true
+        mark('token', 'token paired', true, 'Bearer Token 已由服务验证')
+        mark('origin', 'trusted Origin 已绑定', true, '当前 Extension Origin 已由服务接受')
+        caps = await call<CapabilitiesResponse>('getCapabilities')
+        setCapabilities(caps)
+      } catch (e) {
+        mark('token', 'token paired', false, errMessage(e))
+        mark('origin', 'trusted Origin 已绑定', false, '认证命令未通过，无法确认 Origin 绑定')
+      }
+
+      const matched = serviceCompatibility(info)
+      const runtimeMatched = caps?.runtime?.acceptanceBuildId === EXTENSION_BUILD_ID
+        && caps?.runtime?.requiredExtensionBuildId === EXTENSION_BUILD_ID
+      mark('version', 'extension/service 版本匹配', matched.ok && runtimeMatched,
+        matched.ok && runtimeMatched ? `${EXTENSION_BUILD_ID} · extension ${extensionVersion}` : [...matched.reasons, ...(runtimeMatched ? [] : ['服务能力表构建标识不匹配'])].join('；'))
+
+      try {
+        const authResult = await chrome.runtime.sendMessage({ type: 'CHECK_AUTH', payload: { platformId: 'zhihu' } }) as { auth?: { isAuthenticated?: boolean; error?: string } }
+        const loggedIn = authResult?.auth?.isAuthenticated === true
+        mark('login', '知乎登录状态可用', loggedIn, loggedIn ? '当前 Chrome 会话已登录' : (authResult?.auth?.error || '当前 Chrome 会话未登录知乎'))
+      } catch (e) {
+        mark('login', '知乎登录状态可用', false, (e as Error).message || '无法检查知乎登录状态')
+      }
+
+      const oneArticle = Boolean(detail && openCap?.platform?.id === 'zhihu')
+      mark('article', '仅选中 1 篇知乎文章', oneArticle, oneArticle ? `packageId ${detail!.packageId}` : '请在文章库只选择一篇知乎文章')
+      if (oneArticle) {
+        try {
+          checked = await call<PreflightResponse>('preflightPackage', { packageId: detail!.packageId, platform: 'zhihu' })
+          setPreflight(checked)
+          const executable = Boolean(checked.snapshot?.gate.executable) && (checked.snapshot?.gate.blocks.length || 0) === 0
+          mark('snapshot', 'snapshot executable', executable, executable ? `snapshot ${checked.snapshot!.snapshotId}` : (checked.snapshot?.gate.blocks.join('；') || checked.summary.blocks.join('；') || '快照不可执行'))
+        } catch (e) {
+          mark('snapshot', 'snapshot executable', false, errMessage(e))
+        }
+      } else {
+        mark('snapshot', 'snapshot executable', false, '尚未选择知乎文章')
+      }
+
+      try {
+        const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'saveDraft', platform: 'zhihu' })
+        mark('draft-gate', '未确认时 zhihu.saveDraft 仍 deny', gate.allowed === false, gate.reason)
+      } catch (e) {
+        mark('draft-gate', '未确认时 zhihu.saveDraft 仍 deny', false, errMessage(e))
+      }
+      try {
+        const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'publish', platform: 'zhihu' })
+        mark('publish-gate', 'publish 始终 deny', gate.allowed === false, gate.reason)
+      } catch (e) {
+        mark('publish-gate', 'publish 始终 deny', false, errMessage(e))
+      }
+    } finally {
+      const ordered = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'draft-gate', 'publish-gate']
+        .map((key) => checks.get(key) || { key, label: key, ok: false, detail: '检查未完成' })
+      setAcceptanceChecks(ordered)
+      setAcceptanceBusy(false)
+    }
+    return { ok: checks.size === 9 && [...checks.values()].every((item) => item.ok), preflight: checked, checks }
+  }
+
   async function saveZhihuDraft() {
     if (!detail || !preview || openCap?.platform?.id !== 'zhihu' || !zhihuConfirmed) return
     setZhihuBusy(true); setZhihuNote(''); setDetailError('')
     let taskId = ''
     try {
-      const checked = await call<PreflightResponse>('preflightPackage', { packageId: detail.packageId, platform: 'zhihu' })
-      setPreflight(checked)
-      if (!checked.snapshot || checked.snapshot.gate.blocks.length) {
-        throw new Error(`知乎草稿预检未通过：${checked.snapshot?.gate.blocks.join('；') || checked.summary.blocks.join('；')}`)
+      const acceptance = await runAcceptanceCheck()
+      const checked = acceptance.preflight
+      if (!acceptance.ok || !checked?.snapshot || checked.snapshot.gate.blocks.length) {
+        throw new Error('Stage 3 验收前自检未全部通过，已阻止真实草稿操作')
       }
       const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>('prepareZhihuDraft', {
         packageId: detail.packageId, userConfirmed: true,
@@ -819,6 +943,22 @@ export function Workbench() {
         payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
       }) as { result?: Record<string, unknown>; error?: string }
       if (response?.error || !response?.result) throw new Error(response?.error || '知乎草稿 Adapter 未返回结果')
+      const result = response.result as { postId?: string; postUrl?: string; draftOnly?: boolean; readBackVerified?: boolean }
+      const completed = await call<{ task: ServerTask }>('getTask', { taskId })
+      const info = serviceInfo || await health()
+      const evidence = buildAcceptanceEvidence({
+        timestamp: new Date().toISOString(), serviceVersion: info.version,
+        protocolName: info.protocol.name, protocolVersion: info.protocol.version,
+        extensionVersion, articleId: detail.packageId, packageId: detail.packageId,
+        snapshotId, contentHash: checked.snapshot.contentVersion, imageCount: checked.snapshot.imageCount,
+        taskId, postId: String(result.postId || ''), draftUrl: String(result.postUrl || ''),
+        draftOnly: result.draftOnly === true, readBackVerified: result.readBackVerified === true,
+        finalTaskStatus: completed.task?.status || completed.task?.draft?.stage || 'unknown',
+        saveDraftDeniedBeforeConfirmation: acceptance.checks.get('draft-gate')?.ok === true,
+        publishDenied: acceptance.checks.get('publish-gate')?.ok === true,
+      })
+      setAcceptanceEvidence(evidence)
+      await chrome.storage.local.set({ [ACCEPTANCE_EVIDENCE_KEY]: evidence })
       setZhihuNote('知乎草稿已保存并回读确认。请在任务中心打开草稿检查；不会自动公开发布。')
       setZhihuConfirmed(false)
       await reloadServerTasks()
@@ -938,6 +1078,21 @@ export function Workbench() {
         <button className={tab === 'tasks' ? 'on' : ''} onClick={() => setTab('tasks')}>任务中心（{tasks.length + serverTasks.length}）</button>
       </nav>
     </header>
+
+    <section className="acceptance-mode card" data-compatible={compatibility.ok ? 'yes' : 'no'}>
+      <div>
+        <strong>Stage 3 验收模式</strong>
+        <span>仅允许知乎单篇 saveDraft</span>
+        <span className="blocked">publish 永久禁用</span>
+      </div>
+      <dl className="acceptance-versions">
+        <div><dt>Service</dt><dd>{serviceInfo?.version || '未连接'}</dd></div>
+        <div><dt>Protocol</dt><dd>{serviceInfo ? `${serviceInfo.protocol.name}/${serviceInfo.protocol.version}` : '未读取'}</dd></div>
+        <div><dt>Extension</dt><dd>{extensionVersion}</dd></div>
+        <div><dt>Build</dt><dd>{EXTENSION_BUILD_ID}</dd></div>
+      </dl>
+      {!compatibility.ok && <p role="alert">版本不匹配，真实草稿按钮已阻止：{compatibility.reasons.join('；')}。请重新加载正确验收包。</p>}
+    </section>
 
     {serviceState === 'unpaired' && <section className="pair card">
       <h2>服务配对</h2>
@@ -1196,14 +1351,24 @@ export function Workbench() {
           {openCap?.kind === 'guarded-draft' && <>
             <h3>知乎单篇真实草稿（Stage 3）</h3>
             <p className="hint">流程：只读预检 → 锁定不可变快照 → 检查当前 Chrome 知乎登录 → 上传图片并填写 → 保存草稿 → 平台回读确认。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
+            <div className="acceptance-checks">
+              <div className="row">
+                <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy}>{acceptanceBusy ? '正在执行验收前自检…' : '运行 Preflight Acceptance Check'}</button>
+                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '9/9 自检通过，可进行当次确认。' : '真实草稿操作必须先通过全部 9 项自检。'}</span>
+              </div>
+              {!!acceptanceChecks.length && <ul>{acceptanceChecks.map((item) => <li key={item.key} data-check={item.ok ? 'pass' : 'fail'}>
+                <strong>{item.ok ? 'PASS' : 'BLOCK'} · {item.label}</strong><small>{item.detail}</small>
+              </li>)}</ul>}
+            </div>
             <label className="row">
-              <input type="checkbox" checked={zhihuConfirmed} onChange={(e) => setZhihuConfirmed(e.target.checked)} />
+              <input type="checkbox" checked={zhihuConfirmed} disabled={!acceptanceReady} onChange={(e) => setZhihuConfirmed(e.target.checked)} />
               我确认仅为当前文章保存一篇知乎草稿，并理解这会向知乎发送标题、正文和图片。
             </label>
             <div className="row">
               <button className="secondary" onClick={runPreflight} disabled={preflightBusy}>{preflightBusy ? '正在预检…' : '先运行只读预检'}</button>
-              <button onClick={saveZhihuDraft} disabled={!zhihuConfirmed || zhihuBusy}>{zhihuBusy ? '正在保存并回读…' : '保存一篇知乎草稿'}</button>
+              <button onClick={saveZhihuDraft} disabled={!compatibility.ok || !acceptanceReady || !zhihuConfirmed || zhihuBusy}>{zhihuBusy ? '正在保存并回读…' : '保存一篇知乎草稿'}</button>
               <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>
+              <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成小样本验收材料（只读）'}</button>
             </div>
             {zhihuNote && <p className={zhihuNote.includes('已保存') ? 'ok' : 'warn'}>{zhihuNote}</p>}
           </>}
@@ -1305,6 +1470,13 @@ export function Workbench() {
     {tab === 'tasks' && <section className="card">
       <h2>任务中心 · 模拟与知乎草稿（Stage 3）</h2>
       <p className="hint">官网/百家号与搜狐仍为模拟；知乎可出现受保护的真实草稿任务。草稿保存成功不等于公开发布，后续发布、Excel 登记和归档不会自动触发。</p>
+
+      {acceptanceEvidence && <div className="acceptance-evidence">
+        <strong>非敏感验收证据已就绪</strong>
+        <span className="mono">{acceptanceEvidence.acceptanceId}</span>
+        <button className="secondary" onClick={downloadAcceptanceEvidence}>导出验收证据 JSON</button>
+        <small>仅包含版本、ID、哈希、图片数量、草稿地址、回读状态和安全闸门摘要；不含标题、正文、Token、Cookie、账号、Profile、Excel 或本地路径。</small>
+      </div>}
 
       <h3 className="state-title">按发布包汇总 · 归档门槛预览</h3>
       {!archiveGroups.length && <p className="hint">暂无可汇总的任务。创建模拟任务后，这里会按发布包显示是否允许归档。</p>}

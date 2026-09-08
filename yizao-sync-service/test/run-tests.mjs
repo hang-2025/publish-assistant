@@ -324,6 +324,9 @@ test('health 无需令牌，返回版本', async () => {
   assert.equal(res.status, 200);
   const json = await res.json();
   assert.equal(json.name, 'yizao-sync-service');
+  assert.equal(json.protocol.version, 2);
+  assert.equal(json.build.packageVersion, 2);
+  assert.equal(json.build.id, 'stage3-zhihu-acceptance-v2');
 });
 
 test('命令接口：无 Origin / 网页 Origin / 错误 Host 一律拒绝', async () => {

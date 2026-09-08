@@ -77,6 +77,24 @@ ul.tasks li { border: 1px solid #e2e7f1; border-radius: 10px; padding: 10px 14px
 .task-status span[data-stage="结果未知（重启中断）"], .task-status span[data-stage="失败"] { color: #b3261e; }
 footer { color: #7a86a0; font-size: 12.5px; border-top: 1px solid #dde3ee; padding-top: 10px; }
 footer p { margin: 4px 0; }
+.acceptance-mode { border: 2px solid #245de8; background: #f4f7ff; }
+.acceptance-mode > div:first-child { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.acceptance-mode > div:first-child span { border: 1px solid #9cb5f2; border-radius: 999px; padding: 1px 9px; font-size: 12px; }
+.acceptance-mode .blocked { border-color: #db9b95; color: #8c1d18; background: #fff7f6; }
+.acceptance-mode[data-compatible="no"] { border-color: #c94036; background: #fff7f6; }
+.acceptance-mode > p { color: #8c1d18; margin: 8px 0 0; font-weight: 600; }
+.acceptance-versions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 16px; margin: 10px 0 0; }
+.acceptance-versions div { min-width: 0; }
+.acceptance-versions dt { color: #6b7893; font-size: 11px; }
+.acceptance-versions dd { margin: 0; font: 12px/1.5 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+.acceptance-checks { border: 1px solid #cbd6ec; border-radius: 10px; padding: 10px 12px; background: #f8faff; margin: 10px 0; }
+.acceptance-checks ul { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 7px; margin: 8px 0 0; padding: 0; }
+.acceptance-checks li { display: flex; flex-direction: column; border: 1px solid #dfe5f0; border-radius: 8px; padding: 7px 9px; background: #fff; }
+.acceptance-checks li[data-check="pass"] strong { color: #0a7d38; }
+.acceptance-checks li[data-check="fail"] strong { color: #b3261e; }
+.acceptance-checks small { color: #68748c; overflow-wrap: anywhere; }
+.acceptance-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border: 1px solid #bdd7c7; background: #f7fff9; border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
+.acceptance-evidence small { flex-basis: 100%; color: #52645a; }
 
 /* 阶段1B：能力标签与能力化卡片 */
 .tag { font-style: normal; display: inline-block; border: 1px solid #c9d2e3; color: #40506e; background: #f2f5fb; border-radius: 999px; padding: 0 7px; font-size: 11px; line-height: 1.6; }

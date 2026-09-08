@@ -6,6 +6,7 @@
  */
 
 import { platformArchitectureMetadata } from '../platforms/registry.mjs';
+import { ACCEPTANCE_BUILD, LOCAL_PROTOCOL, SERVICE_VERSION } from './build-info.mjs';
 
 export const ACTIONS = {
   upload: '真实上传',
@@ -155,6 +156,12 @@ export function getCapabilities() {
     phase: '3-zhihu-draft-unverified',
     generatedAt: new Date().toISOString(),
     realActionsEnabled: false,
+    runtime: {
+      serviceVersion: SERVICE_VERSION,
+      protocol: LOCAL_PROTOCOL,
+      acceptanceBuildId: ACCEPTANCE_BUILD.id,
+      requiredExtensionBuildId: ACCEPTANCE_BUILD.extensionBuildId,
+    },
     requirementsBeforeRealActions: BASE_REQUIREMENTS,
     actions: ACTIONS,
     platforms: PLATFORM_CAPABILITIES,

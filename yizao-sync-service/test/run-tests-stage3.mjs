@@ -8,6 +8,30 @@ import { TASK_STATUS } from '../domain/status.mjs';
 import { checkRealActionGate } from '../lib/capabilities.mjs';
 import { zhihuAdapter } from '../platforms/zhihu/index.mjs';
 import { ZhihuDraftService } from '../services/zhihu-draft-service.mjs';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import { fileURLToPath } from 'node:url';
+
+const serviceRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const startHereScript = path.join(serviceRoot, 'tools', 'acceptance', 'START-HERE.ps1');
+
+function runPowerShell(args) {
+  return new Promise(async (resolve, reject) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage3-launcher-'));
+    const bomScript = path.join(tempDir, 'START-HERE.ps1');
+    const source = await fs.readFile(startHereScript);
+    await fs.writeFile(bomScript, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), source]));
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', bomScript, '-NoPause', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; });
+    child.on('error', reject);
+    child.on('close', async (code) => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+      resolve({ code, output });
+    });
+  });
+}
 
 function snapshot(version = 'a'.repeat(64)) {
   return {
@@ -94,4 +118,21 @@ test('restart recovery marks in-flight draft failed and never retries', async (t
   const task = await restarted.getTask(prepared.task.taskId);
   assert.equal(task.status, TASK_STATUS.FAILED);
   assert.equal(task.runState, 'stalled');
+});
+
+test('Windows acceptance launcher reports missing Node and occupied port without starting service', { skip: process.platform !== 'win32' }, async () => {
+  const missing = await runPowerShell(['-NodeCommand', 'node-command-that-does-not-exist-for-stage3']);
+  assert.equal(missing.code, 10);
+  assert.match(missing.output, /Node\.js/);
+
+  const listener = net.createServer();
+  await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+  const port = listener.address().port;
+  try {
+    const occupied = await runPowerShell(['-NodeCommand', process.execPath, '-Port', String(port)]);
+    assert.equal(occupied.code, 12);
+    assert.match(occupied.output, new RegExp(String(port)));
+  } finally {
+    await new Promise((resolve) => listener.close(resolve));
+  }
 });

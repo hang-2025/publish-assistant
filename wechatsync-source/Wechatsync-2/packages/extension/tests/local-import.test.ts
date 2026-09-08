@@ -5,6 +5,7 @@ import { importDocument, resolveImage, sanitizeHtml, previewDocument, withoutDup
 import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
+import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 const requireCore = createRequire(resolve(process.cwd(), '../core/package.json'))
 const JSZip = requireCore('jszip')
 
@@ -72,6 +73,53 @@ describe('guarded Zhihu draft adapter', () => {
     expect(result.success).toBe(false)
     expect(result.error).toContain('任务/快照授权')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('Stage 3 acceptance safety', () => {
+  const compatibleHealth = {
+    ok: true,
+    name: 'yizao-sync-service',
+    version: '0.3.0-stage3-zhihu-draft',
+    protocol: { name: 'yizao-local-service', version: 2 },
+    build: { packageVersion: 2, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+  }
+
+  it('blocks mismatched service or extension builds', () => {
+    expect(serviceCompatibility(compatibleHealth).ok).toBe(true)
+    expect(serviceCompatibility({ ...compatibleHealth, version: 'old-service' }).ok).toBe(false)
+    expect(serviceCompatibility({ ...compatibleHealth, protocol: { name: 'yizao-local-service', version: 1 } }).ok).toBe(false)
+    expect(serviceCompatibility({ ...compatibleHealth, build: { ...compatibleHealth.build, id: 'old-extension' } }).ok).toBe(false)
+  })
+
+  it('requires every preflight acceptance check', () => {
+    const keys = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'draft-gate', 'publish-gate']
+    expect(acceptanceChecksPassed(keys.map((key) => ({ key, ok: true })))).toBe(true)
+    expect(acceptanceChecksPassed(keys.map((key) => ({ key, ok: key !== 'token' })))).toBe(false)
+    expect(acceptanceChecksPassed(keys.filter((key) => key !== 'login').map((key) => ({ key, ok: true })))).toBe(false)
+  })
+
+  it('exports only the non-sensitive acceptance evidence allowlist', () => {
+    const evidence = buildAcceptanceEvidence({
+      timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
+      protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
+      extensionVersion: '2.0.9.2', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
+      taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
+      draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
+      saveDraftDeniedBeforeConfirmation: true, publishDenied: true,
+    })
+    const json = JSON.stringify(evidence).toLowerCase()
+    const keys: string[] = []
+    const collectKeys = (value: unknown) => {
+      if (!value || typeof value !== 'object') return
+      for (const [key, nested] of Object.entries(value)) { keys.push(key.toLowerCase()); collectKeys(nested) }
+    }
+    collectKeys(evidence)
+    expect(evidence.platform).toBe('zhihu')
+    expect(evidence.safetyGates.publicPublishEnabled).toBe(false)
+    for (const forbidden of ['title', 'body', 'content', 'cookie', 'token', 'authorization', 'account', 'profile', 'excelpath', 'filepath', 'absolutepath']) expect(keys).not.toContain(forbidden)
+    for (const forbiddenValue of ['bearer ', 'c:\\users\\', 'chrome profile']) expect(json).not.toContain(forbiddenValue)
   })
 })
 
