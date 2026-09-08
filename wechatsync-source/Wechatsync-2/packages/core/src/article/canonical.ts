@@ -1,6 +1,6 @@
 import { parseHTML } from 'linkedom'
 
-export const ZHIHU_CAPTION_POLICY_MAX_LENGTH = 200
+export const ZHIHU_CAPTION_POLICY_MAX_LENGTH = 140
 
 export type FidelityStatus = 'PASS' | 'DEGRADED' | 'UNSUPPORTED' | 'FAIL'
 

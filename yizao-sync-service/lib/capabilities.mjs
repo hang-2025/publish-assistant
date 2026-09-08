@@ -103,7 +103,7 @@ const LEGACY_PLATFORM_CAPABILITIES = [
       archiveMove: 'requires-explicit-authorization',
     },
     evidence: ['自动测试覆盖 Canonical HTML、Caption=img.alt、平台回读保真、登录失败、重复任务、快照变化、图片失败与重启恢复'],
-    risks: ['尚未使用专用知乎测试账号确认平台对各语义块与 200 字 Caption 验收策略的实际表现，因此 verified/saveDraft 仍为 false'],
+    risks: ['尚未使用专用知乎测试账号确认平台对各语义块与 140 字 Caption 验收策略的实际表现，因此 verified/saveDraft 仍为 false'],
   },
   {
     id: 'sohu',

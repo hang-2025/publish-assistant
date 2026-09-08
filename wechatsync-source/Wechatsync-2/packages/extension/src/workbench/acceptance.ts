@@ -1,5 +1,6 @@
-export const EXTENSION_BUILD_ID = 'stage3-zhihu-html-fidelity-v3'
-export const ACCEPTANCE_PACKAGE_VERSION = 3
+export const EXTENSION_BUILD_ID = 'stage3-zhihu-html-fidelity-v3.1'
+export const ACCEPTANCE_PACKAGE_VERSION = 31
+export const ACCEPTANCE_PACKAGE_LABEL = '3.1'
 export const EXPECTED_SERVICE_VERSION = '0.3.0-stage3-zhihu-draft'
 export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
 
@@ -22,7 +23,7 @@ export function serviceCompatibility(info: ServiceHealth | null | undefined) {
   if (info?.build?.id !== EXTENSION_BUILD_ID || info?.build?.extensionBuildId !== EXTENSION_BUILD_ID) {
     reasons.push(`验收构建不匹配（需要 ${EXTENSION_BUILD_ID}）`)
   }
-  if (info?.build?.packageVersion !== ACCEPTANCE_PACKAGE_VERSION) reasons.push(`验收包版本不匹配（需要 v${ACCEPTANCE_PACKAGE_VERSION}）`)
+  if (info?.build?.packageVersion !== ACCEPTANCE_PACKAGE_VERSION) reasons.push(`验收包版本不匹配（需要 v${ACCEPTANCE_PACKAGE_LABEL}）`)
   return { ok: reasons.length === 0, reasons }
 }
 

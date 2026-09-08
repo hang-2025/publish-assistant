@@ -184,8 +184,8 @@ const capabilities = {
   runtime: {
     serviceVersion: '0.3.0-stage3-zhihu-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    acceptanceBuildId: 'stage3-zhihu-html-fidelity-v3',
-    requiredExtensionBuildId: 'stage3-zhihu-html-fidelity-v3',
+    acceptanceBuildId: 'stage3-zhihu-html-fidelity-v3.1',
+    requiredExtensionBuildId: 'stage3-zhihu-html-fidelity-v3.1',
   },
   actions: {
     upload: '真实上传/保存草稿',
@@ -231,7 +231,7 @@ try {
     const write = (value) => localStorage.setItem('__chrome_storage_mock__', JSON.stringify(value))
     if (!read().yizao_service_token) write({ ...read(), yizao_service_token: 'a'.repeat(64) })
     globalThis.chrome = { runtime: {
-      getManifest: () => ({ version: '2.0.9.3' }),
+      getManifest: () => ({ version: '2.0.9.4' }),
       sendMessage: async (message) => message.type === 'CHECK_AUTH' ? { auth: { isAuthenticated: true } } : { error: 'mock only permits auth checks' },
     }, storage: { local: {
       get: async (key) => typeof key === 'string' ? { [key]: read()[key] } : { ...read() },
@@ -240,7 +240,7 @@ try {
   })
   await page.route('http://127.0.0.1:8788/**', async (route) => {
     const req = route.request()
-    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.3.0-stage3-zhihu-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 3, id: 'stage3-zhihu-html-fidelity-v3', extensionBuildId: 'stage3-zhihu-html-fidelity-v3' } } })
+    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.3.0-stage3-zhihu-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 31, id: 'stage3-zhihu-html-fidelity-v3.1', extensionBuildId: 'stage3-zhihu-html-fidelity-v3.1' } } })
     const message = req.postDataJSON()
     if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' }, archive: { configured: true, resolved: 'C:\\模拟目录\\已归档' } }, excel: { configured: true, resolved: 'C:\\模拟目录\\计划表\\阶段1C模拟登记表.xlsx', sheetName: '9月执行计划' }, mappings: { platformValues: { 'eyzao.com': ['官网', 'eyzao.com', 'www.eyzao.com'], baijiahao: ['百家号', 'baijiahao'], zhihu: ['知乎', 'zhihu'], sohu: ['搜狐', '搜狐号', 'sohu'] } }, captionPolicy: { official: 'keep-existing-only', baijiahao: 'keep-existing-only', draft: 'use-existing-alt-after-preview' } } })
     if (message.command === 'scan') return route.fulfill({ json: { ok: true, packages } })

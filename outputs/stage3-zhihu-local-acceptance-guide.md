@@ -1,6 +1,7 @@
-# Stage 3 知乎 HTML 保真草稿本地验收（Windows v3）
+# Stage 3 知乎 HTML 保真草稿本地验收（Windows v3.1）
 
 > 本验收包只允许保存一篇知乎测试草稿。公开发布、Excel 写入、文件移动/删除、真实归档和其他平台均保持禁用。
+> 请只使用文件名带 `v3.1` 的验收包；旧 v3 包已废弃，v3.1 的 build/package identity 检查会阻止旧扩展或旧服务执行真实草稿。
 
 ## 三步验收
 
@@ -12,7 +13,7 @@
 
 - 必需 PASS：标题、正文文字及主块顺序、strong/emphasis 语义、图片数量、图片顺序、图片相对正文锚点、每张图 Caption 等于源 HTML `img.alt`、受信任草稿 URL、`draftOnly`、平台回读。
 - 可显式 DEGRADED：平台规范化后的 H1-H3、列表、引用、链接和表格语义；表格只承诺单元格语义，不承诺像素级样式。
-- Caption 当前验收策略上限为 200 个 Unicode 字符；超限会在 Preflight 阻止，不会静默截断。
+- Caption 当前验收策略上限为 140 个 Unicode 字符；140 字允许，141 字会在 Preflight 阻止，不会静默截断。
 - 当前 capability 不承诺知乎提供独立的无障碍 ALT 字段（`imageAlt=false`）；HTML `img.alt` 仍会写入请求，但本轮唯一强制且可回读的映射是可见 Caption。
 - 任一必需项 FAIL 时，即使知乎已返回草稿 ID，也不得标记 Stage 3 verified 或 `draft_saved`，不得自动重试。
 

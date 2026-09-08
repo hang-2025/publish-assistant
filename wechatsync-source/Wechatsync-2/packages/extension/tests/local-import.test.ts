@@ -102,7 +102,7 @@ describe('Stage 3 acceptance safety', () => {
     name: 'yizao-sync-service',
     version: '0.3.0-stage3-zhihu-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 3, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 31, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -124,7 +124,7 @@ describe('Stage 3 acceptance safety', () => {
     const evidence = buildAcceptanceEvidence({
       timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
       protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
-      extensionVersion: '2.0.9.3', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      extensionVersion: '2.0.9.4', articleId: 'pkg-safe', packageId: 'pkg-safe',
       snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
       taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
       draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
@@ -159,9 +159,12 @@ describe('canonical publishing HTML fidelity', () => {
     expect(rendered).not.toContain('旧图注')
   })
 
-  it('blocks overlong captions without silently truncating', () => {
-    const longAlt = '图'.repeat(ZHIHU_CAPTION_POLICY_MAX_LENGTH + 1)
-    expect(() => assertCaptionPolicy(parseCanonicalArticle(`<img src="x" alt="${longAlt}">`, '标题'))).toThrow('不会静默截断')
+  it('accepts 140 Unicode characters and blocks 141 without silently truncating', () => {
+    expect(ZHIHU_CAPTION_POLICY_MAX_LENGTH).toBe(140)
+    const atLimitAlt = '图'.repeat(140)
+    const overLimitAlt = '图'.repeat(141)
+    expect(() => assertCaptionPolicy(parseCanonicalArticle(`<img src="x" alt="${atLimitAlt}">`, '标题'))).not.toThrow()
+    expect(() => assertCaptionPolicy(parseCanonicalArticle(`<img src="x" alt="${overLimitAlt}">`, '标题'))).toThrow('不会静默截断')
   })
 
   it('blocks image nesting whose anchor cannot be represented safely', () => {
