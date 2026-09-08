@@ -312,7 +312,7 @@ try {
   await shot('workbench-1d-platform-capabilities.png')
 
   await page.getByRole('button', { name: '安全闸门' }).click()
-  await page.getByRole('heading', { name: '安全闸门 · 真实动作检查（阶段2J）' }).waitFor()
+  await page.getByRole('heading', { name: '安全闸门 · 真实动作检查（Stage 3）' }).waitFor()
   await page.getByRole('button', { name: '检查真实动作闸门（只读）' }).click()
   await page.locator('.gate-table tbody tr').first().waitFor()
   assert.equal(await page.locator('.gate-table tbody tr').count(), capabilities.platforms.length * Object.keys(capabilities.actions).length, '真实动作闸门需要逐平台逐动作检查')
