@@ -314,6 +314,9 @@ try {
   }
 
   await page.goto(`http://127.0.0.1:${server.address().port}/src/workbench/index.html`)
+  const setupPanel = page.locator('details.setup-panel')
+  await setupPanel.waitFor()
+  if (!(await setupPanel.evaluate((element) => element.open))) await setupPanel.locator('summary').click()
   await page.getByRole('heading', { name: '配置向导（首次使用）' }).waitFor()
   await page.getByRole('button', { name: '生成可分享模板' }).click()
   await page.getByText('已生成团队配置模板').waitFor()
@@ -322,6 +325,8 @@ try {
   assert.equal(await page.locator('main').innerText().then((t) => t.includes('图片图注策略')), true, '配置向导需要展示图注策略')
   assert.equal(await page.locator('main').innerText().then((t) => t.includes('roots.unpublished')), true, '模板导出需要明确排除个人路径')
   await shot('workbench-2b-config-wizard.png')
+  await setupPanel.locator('summary').click()
+  assert.equal(await setupPanel.evaluate((element) => element.open), false, '配置完成后可收起，日常使用不占据文章库页面')
 
   await page.getByRole('button', { name: '扫描未发布' }).click()
   await page.getByRole('button', { name: /易造新品发布通稿/ }).waitFor()
@@ -369,6 +374,7 @@ try {
   })
   await page.getByRole('button', { name: '一键保存到知乎草稿' }).click()
   await page.getByText('已取消：未向知乎保存草稿。').waitFor()
+  await shot('workbench-3-zhihu-one-click.png')
   await page.getByRole('button', { name: '生成小样本验收材料（只读）' }).click()
   await page.getByRole('heading', { name: '真实执行验收材料（只读预览）' }).waitFor()
   assert.equal(await page.locator('.checklist-section').count(), 2, '知乎草稿预览也应提供只读验收单与小样本模板')

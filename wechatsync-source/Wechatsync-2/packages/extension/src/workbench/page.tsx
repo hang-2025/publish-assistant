@@ -1126,7 +1126,11 @@ export function Workbench() {
     {error && <div role="alert" className="error">{error}</div>}
 
     {serviceState === 'ok' && tab === 'library' && <>
-      <section className="card">
+      <details className="card setup-panel" open={!roots.unpublished}>
+        <summary>
+          <strong>设置与目录</strong>
+          <span>{roots.unpublished ? '已配置，日常使用无需展开' : '首次使用，请先完成配置'}</span>
+        </summary>
         <h2>配置向导（首次使用）</h2>
         <div className="wizard-step">
           <h3>1. 个人目录</h3>
@@ -1187,7 +1191,7 @@ export function Workbench() {
         </div>
         {roots.unpublished && <p className="hint">当前未发布目录：{roots.unpublished}{roots.published ? ` · 已发布目录：${roots.published}` : ''}{roots.archive ? ` · 归档目标：${roots.archive}` : ''}</p>}
         {excel.planPath && <p className="hint">当前登记表：{excel.planPath}{excel.sheetName ? ` · 工作表：${excel.sheetName}` : ''}（可做只读匹配预览，不写表）</p>}
-      </section>
+      </details>
 
       {roots.unpublished && <section className="card">
         <h2>文章库</h2>
@@ -1235,7 +1239,12 @@ export function Workbench() {
         {openCap && <p className="hint">{openCap.explain}</p>}
         {!!detail.issues.length && <div className="warn"><strong>校验问题（{detail.issues.length}）：</strong><ul>{detail.issues.map((i, n) => <li key={n}>{i}</li>)}</ul></div>}
         {!!detail.notes.length && <p className="hint">{detail.notes.join('；')}</p>}
-        <div className="detail-grid">
+        <details className="article-inspection">
+          <summary>
+            <strong>查看正文、图片与 SEO 详情</strong>
+            <span>只读预览，需要核对时展开</span>
+          </summary>
+          <div className="detail-grid">
           <div className="preview-pane">
             <h3>正文安全预览（本地清理后渲染，不上传）</h3>
             {!!preview?.missing.length && <p className="warn">预览缺图 {preview.missing.length} 张：{preview.missing.join('、')}</p>}
@@ -1268,7 +1277,8 @@ export function Workbench() {
             <h3>文件清单（{detail.fileList.length}）</h3>
             <ul className="files">{detail.fileList.map((f) => <li key={f.relative}><code>{f.relative}</code> <small>{(f.bytes / 1024).toFixed(1)} KB</small></li>)}</ul>
           </div>
-        </div>
+          </div>
+        </details>
 
         {/* 能力入口：发布流程预览（官网/百家号，服务端）| 草稿流程预览（知乎/搜狐，扩展本地）| 待适配（禁用） */}
         <div className="flow-card">

@@ -83,6 +83,7 @@ try {
   assert.equal(libraryBody.includes('草稿已保存'), false, '模拟不能显示「草稿已保存」')
   assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 0, '本轮夹具没有待适配卡片')
   await page.getByRole('button', { name: /智能雷暴仪预警应用/ }).click()
+  await page.locator('details.article-inspection > summary').click()
   await page.getByText('正文出现位置映射（1）').waitFor()
   assert.equal(await page.getByText(/雷暴仪现场已有图注/).count() > 0, true)
   const frame = page.frameLocator('iframe[title="正文预览"]')
@@ -93,6 +94,7 @@ try {
   await page.screenshot({ path: path.join(extensionRoot, 'workbench-preview.png'), fullPage: true })
 
   await page.getByRole('button', { name: /ALT 冲突测试包/ }).click()
+  await page.locator('details.article-inspection > summary').click()
   await page.getByText('ALT 文案冲突，模拟校验会停止').waitFor()
   await page.getByRole('button', { name: /创建模拟草稿任务/ }).click()
   await page.locator('.task-step', { hasText: '失败' }).waitFor()
