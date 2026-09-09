@@ -20,6 +20,8 @@ const taskKey = `pkg-official|eyzao.com|eyzao.com-占位账号|${cv}`
 
 const packages = [
   { packageId: 'pkg-official', relativePath: '官网/eyzao.com/易造新闻/2026-09-01/官网正常包', segments: ['官网', 'eyzao.com', '易造新闻', '2026-09-01', '官网正常包'], title: '易造新品发布通稿（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
+  { packageId: 'pkg-official-cn', relativePath: '官网/eyzao.cn/易造新闻/2026-09-02/官网CN包', segments: ['官网', 'eyzao.cn', '易造新闻', '2026-09-02', '官网CN包'], title: '易造中文官网文章（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
+  { packageId: 'pkg-official-lightning', relativePath: '官网/yzfanglei.com/智能防雷系统/2026-09-03/防雷官网包', segments: ['官网', 'yzfanglei.com', '智能防雷系统', '2026-09-03', '防雷官网包'], title: '易造防雷官网文章（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-baijiahao', relativePath: '主流平台/百家号/易造科技/2026-09-02/百家号包', segments: ['主流平台', '百家号', '易造科技', '2026-09-02', '百家号包'], title: '百家号图文（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-zhihu', relativePath: '主流平台/zhihu/智能雷暴仪/2026-09-02/知乎包', segments: ['主流平台', 'zhihu', '智能雷暴仪', '2026-09-02', '知乎包'], title: '智能雷暴仪预警应用', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-toutiao', relativePath: '主流平台/toutiao/智能雷暴仪/2026-09-03/头条包', segments: ['主流平台', 'toutiao', '智能雷暴仪', '2026-09-03', '头条包'], title: '雷电预警头条版（待适配）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['待适配平台，仅只读展示'] },
@@ -330,7 +332,12 @@ try {
   await page.getByRole('button', { name: '扫描未发布' }).click()
   await page.getByRole('button', { name: /易造新品发布通稿/ }).waitFor()
   assert.equal(await page.locator('.source-group').count(), 5, '五个来源分组：官网/百家号/知乎/头条/网易')
-  assert.equal(await page.locator('.pkg[data-cap="publish-preview"]').count(), 2, '官网与百家号 = 发布流程预览')
+  assert.equal(await page.locator('.pkg[data-cap="publish-preview"]').count(), 4, '三个官网与百家号 = 发布流程预览')
+  await page.getByLabel('平台筛选').selectOption({ label: '官方网站' })
+  assert.equal(await page.locator('.source-group').count(), 1, '三个官网应聚合为一个官方网站平台区块')
+  assert.equal(await page.locator('.pkg').count(), 3, '官方网站平台应包含三个站点的文章')
+  assert.equal(await page.locator('.site-tag').count(), 3, '每篇官网文章必须保留目标站点标识')
+  await page.getByRole('button', { name: '清除筛选' }).click()
   assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 1, '知乎 = 受保护单篇草稿')
   assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 1, '网易 = 草稿流程预览')
   assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 1, '头条 = 待适配')
@@ -342,12 +349,13 @@ try {
   await page.getByLabel('搜索文章').fill('不存在的文章')
   await page.getByText('没有找到符合条件的文章。').waitFor()
   await page.getByRole('button', { name: '查看全部' }).click()
-  assert.equal(await page.locator('.pkg').count(), 5, '查看全部应清除组合筛选')
+  assert.equal(await page.locator('.pkg').count(), 7, '查看全部应清除组合筛选')
   await shot('workbench-1b-library.png')
 
   await page.getByRole('button', { name: '平台与账号' }).click()
   await page.getByText('真实动作未启用').waitFor()
-  assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 4, '三个官网站点与百家号可做模拟')
+  assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 2, '官方网站聚合卡与百家号可做模拟')
+  assert.equal(await page.locator('.cap-card').filter({ hasText: '3 个站点：eyzao.com、eyzao.cn、yzfanglei.com' }).count(), 1, '平台页应把三个官网显示为一个平台')
   assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 2, '搜狐/网易可做草稿流程模拟')
   assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 2, '头条/小红书仍待适配')
   await shot('workbench-1d-platform-capabilities.png')

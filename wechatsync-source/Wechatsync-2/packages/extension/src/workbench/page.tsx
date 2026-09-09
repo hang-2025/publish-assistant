@@ -124,11 +124,12 @@ function groupPackages(packages: PkgSummary[], catalog: CapabilityPlatform[]): P
     const [kind = '未分类', source = '未分类', category = '未分类'] = pkg.segments
     const isWebsite = kind === '官网' || /(?:^|\.)eyzao\.(?:com|cn)$/i.test(source)
     const platform = platformFromSegments(pkg.segments, catalog)
-    const sourceKey = `${kind}/${source}`
+    // 三个官网在用户界面中是一个平台；包内域名仍用于 Adapter、栏目映射和防投错校验。
+    const sourceKey = isWebsite ? 'official' : `${kind}/${source}`
     if (!sources.has(sourceKey)) {
       sources.set(sourceKey, {
-        name: platform?.name || source,
-        badge: isWebsite ? (SITE_ADAPTERS[source.toLowerCase()] || '官网') : (platform?.id || source.toLowerCase()),
+        name: isWebsite ? '官方网站' : (platform?.name || source),
+        badge: isWebsite ? '3 个官网' : (platform?.id || source.toLowerCase()),
         categories: new Map(),
       })
     }
@@ -141,6 +142,29 @@ function groupPackages(packages: PkgSummary[], catalog: CapabilityPlatform[]): P
     categories: Array.from(source.categories, ([name, items]) => ({ name, packages: items })),
     count: Array.from(source.categories.values()).reduce((sum, items) => sum + items.length, 0),
   }))
+}
+
+interface CapabilityPlatformView extends CapabilityPlatform {
+  sites?: { id: string; name: string }[]
+}
+
+/** 平台页把三个官网聚合展示，真实闸门仍逐站点检查。 */
+function groupCapabilityPlatforms(platforms: CapabilityPlatform[]): CapabilityPlatformView[] {
+  const official = platforms.filter((platform) => platform.group === '官网')
+  const others = platforms.filter((platform) => platform.group !== '官网')
+  if (!official.length) return others
+  const unique = (items: string[]) => [...new Set(items)]
+  return [{
+    ...official[0],
+    id: 'official',
+    name: '官方网站',
+    group: '官网',
+    currentActions: unique(official.flatMap((platform) => platform.currentActions)),
+    plannedActions: unique(official.flatMap((platform) => platform.plannedActions)),
+    evidence: unique(official.flatMap((platform) => platform.evidence)),
+    risks: unique(official.flatMap((platform) => platform.risks)),
+    sites: official.map(({ id, name }) => ({ id, name })),
+  }, ...others]
 }
 
 function packageDate(pkg: PkgSummary): string {
@@ -546,6 +570,7 @@ export function Workbench() {
   const acceptanceReady = acceptanceChecksPassed(acceptanceChecks)
   const extensionVersion = chrome.runtime?.getManifest?.().version || 'development-test'
   const platformCatalog = capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES
+  const capabilityPlatformViews = useMemo(() => groupCapabilityPlatforms(capabilities?.platforms || []), [capabilities])
   const libraryPlatformOptions = useMemo(() => {
     const groups = groupPackages(Object.values(scans).flat(), platformCatalog)
     return groups.map(({ key, name }) => ({ key, name }))
@@ -554,7 +579,9 @@ export function Workbench() {
     const query = librarySearch.trim().toLocaleLowerCase('zh-CN')
     return packages.filter((pkg) => {
       const [kind = '未分类', source = '未分类'] = pkg.segments
-      if (libraryPlatform !== 'all' && `${kind}/${source}` !== libraryPlatform) return false
+      const isWebsite = kind === '官网' || /(?:^|\.)eyzao\.(?:com|cn)$/i.test(source)
+      const platformKey = isWebsite ? 'official' : `${kind}/${source}`
+      if (libraryPlatform !== 'all' && platformKey !== libraryPlatform) return false
       if (!query) return true
       return [pkg.title, pkg.relativePath, ...pkg.segments]
         .some((value) => value.toLocaleLowerCase('zh-CN').includes(query))
@@ -1249,7 +1276,7 @@ export function Workbench() {
                 const cap = capabilityFor(pkg.segments, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES)
                 const disabled = cap.kind === 'not-ready'
                 return <button key={pkg.packageId} className="pkg" data-cap={cap.kind} disabled={disabled} title={disabled ? cap.explain : undefined} onClick={() => openPackage(pkg)}>
-                  <span className="pkg-caps">{cap.tags.map((tag) => <i key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</i>)}</span>
+                  <span className="pkg-caps">{pkg.segments[0] === '官网' && <i className="tag site-tag">{pkg.segments[1]}</i>}{cap.tags.map((tag) => <i key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</i>)}</span>
                   <strong>{pkg.title}</strong>
                   <small>{packageDate(pkg)}</small>
                   <span className="pkg-health">{pkg.issueCount ? `⚠ ${pkg.issueCount} 项问题` : '✓ 完整'} <small>图片 {pkg.imageCount} · ALT {pkg.altCount}</small></span>
@@ -1478,7 +1505,7 @@ export function Workbench() {
         </div>
         <h3>进入真实阶段前必须满足</h3>
         <ul className="checklist">{capabilities.requirementsBeforeRealActions.map((item) => <li key={item}>{item}</li>)}</ul>
-        <div className="cap-grid">{capabilities.platforms.map((p) => <article className="cap-card" data-status={p.status} key={p.id}>
+        <div className="cap-grid">{capabilityPlatformViews.map((p) => <article className="cap-card" data-status={p.status} key={p.id}>
           <div className="cap-head">
             <strong>{p.name}</strong>
             <span>{p.group}</span>
@@ -1490,6 +1517,7 @@ export function Workbench() {
             {p.status === 'not-adapted' && '待适配'}
             {!['simulation-ready', 'draft-simulation', 'guarded-draft-unverified', 'not-adapted'].includes(p.status) && p.status}
           </p>
+          {!!p.sites?.length && <small className="official-sites">{p.sites.length} 个站点：{p.sites.map((site) => site.id).join('、')}</small>}
           <small>当前：{p.currentActions.join('、')}</small>
           <small>计划：{p.plannedActions.join('、')}</small>
           {!!p.evidence?.length && <small>依据：{p.evidence.join('；')}</small>}

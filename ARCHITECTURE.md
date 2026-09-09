@@ -59,7 +59,7 @@ saveDraft / publish / getStatus
 
 当前平台分组：
 
-- `platforms/official`：eyzao.com、eyzao.cn、yzfanglei.com 的发布流程模拟。
+- `platforms/official`：用户界面统一显示为“官方网站”平台；内部保留 eyzao.com、eyzao.cn、yzfanglei.com 三个站点 Adapter，分别执行包↔站点绑定、栏目映射与站点锁校验，当前仍为发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
 - `platforms/zhihu`：受保护单篇草稿协调，未完成人工验收前 `verified/saveDraft` 仍为 false。
 - `platforms/sohu`、`platforms/netease`：扩展本地草稿流程模拟的能力声明，不包含平台网络实现。
