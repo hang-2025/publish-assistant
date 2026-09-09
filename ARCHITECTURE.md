@@ -16,12 +16,12 @@ Local Files / read-only Excel / Future Database
 
 - Chrome Extension 的易造工作台位于 `packages/extension/src/workbench`。它负责呈现文章、平台能力和任务状态，不直接读取任意磁盘路径。
 - Local API 仅绑定 `127.0.0.1`，负责 Host、Origin、Token、请求大小、命令白名单和严格 payload 校验。
-- `yizao-sync-service/services/application.mjs` 是兼容应用层，保留原有 20 条命令并新增 5 条知乎草稿握手命令。
+- `yizao-sync-service/services/application.mjs` 是兼容应用层，保留原有命令，并为知乎、搜狐号分别提供 5 条受保护草稿握手命令。
 - `domain` 定义统一 Article、Task 和状态词汇；旧接口通过转换层渐进接入，不要求一次性迁移。
 - `platforms` 是服务端 Platform Adapter Registry。知乎 Adapter 承接受保护的任务/闸门协调；其他 Adapter 仍只描述能力并承接模拟入口。
 - `repositories` 隔离 Article、Task 和 Excel 存储。当前 Article 为内存投影，Task 继续使用 JSON，Excel 只读。
 
-原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。Stage 3 仅复用其中的知乎 Adapter：`saveDraft()` 创建、上传、保存并回读草稿，`publish()` 明确拒绝公开发布。`packages/core/src/article/canonical.ts` 在平台 Adapter 之前把发布包 HTML 解析为可复用 Canonical Article 块模型，并负责语义渲染、`Caption = HTML img.alt` 策略与平台回读 Fidelity Report；其他网络 Adapter 不等于 Workbench 已启用真实能力。
+原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。知乎与搜狐号 Adapter 均通过 `saveDraft()` 上传、保存并回读单篇草稿，`publish()` 明确拒绝公开发布。`packages/core/src/article/canonical.ts` 在平台 Adapter 之前把发布包 HTML 解析为可复用 Canonical Article 块模型，并负责语义渲染、`Caption = HTML img.alt` 策略与平台回读 Fidelity Report；其他网络 Adapter 不等于 Workbench 已启用真实能力。
 
 ## 2. Article 生命周期
 
@@ -61,8 +61,8 @@ saveDraft / publish / getStatus
 
 - `platforms/official`：用户界面统一显示为“官方网站”平台；内部保留 eyzao.com、eyzao.cn、yzfanglei.com 三个站点 Adapter，分别执行包↔站点绑定、栏目映射与站点锁校验，当前仍为发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
-- `platforms/zhihu`：受保护单篇草稿协调，未完成人工验收前 `verified/saveDraft` 仍为 false。
-- `platforms/sohu`、`platforms/netease`：扩展本地草稿流程模拟的能力声明，不包含平台网络实现。
+- `platforms/zhihu`、`platforms/sohu`：受保护单篇草稿协调，各平台未完成人工验收前 `verified/saveDraft` 仍为 false。
+- `platforms/netease`：扩展本地草稿流程模拟的能力声明，不包含平台网络实现。
 - 头条、小红书：`unsupported`，不得伪造草稿或发布成功。
 
 新增平台时应依次修改：
@@ -96,14 +96,14 @@ pending → validating → ready → running
 
 ## 6. 安全边界
 
-当前构建只有一个严格限定的真实动作例外：
+当前构建只有两个分别限定的真实动作例外：
 
-- 独立的真实上传命令仍禁止；仅知乎 `saveDraft` 内部所需图片上传随该次授权执行。
+- 独立的真实上传命令仍禁止；仅知乎或搜狐号 `saveDraft` 内部所需图片上传随各自当次授权执行。
 - 当前仍然禁止最终公开发布。
 - 当前仍然禁止 Excel 写入。
 - 当前仍然禁止文件移动、删除和真实归档。
-- `checkRealActionGate` 默认拒绝；只在 `zhihu + saveDraft + 当次确认 + 快照复核` 四项同时成立时允许。
-- 知乎 Platform Adapter 的 `publish()` 拒绝；其他平台的 `saveDraft()`、`publish()` 继续拒绝。
+- `checkRealActionGate` 默认拒绝；只在 `zhihu/sohu + saveDraft + 对应独立阶段 + 当次确认 + 快照复核` 同时成立时允许。
+- 知乎、搜狐号 Platform Adapter 的 `publish()` 拒绝；其他平台的 `saveDraft()`、`publish()` 继续拒绝。
 - 不能绕过 Host、Origin、Token、扩展 ID 绑定、packageId、realpath、站点绑定、请求大小和命令白名单验证。
 - `archive-sim.mjs` 的复制算法只在临时测试夹具中验证，没有暴露为 HTTP Command。
 

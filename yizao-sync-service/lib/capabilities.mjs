@@ -109,17 +109,18 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     id: 'sohu',
     name: '搜狐号',
     group: '主流平台',
-    status: 'draft-simulation',
-    currentActions: ['只读扫描', '扩展本地草稿流程模拟'],
-    plannedActions: ['保存草稿', '表格兼容策略预览后确认'],
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '扩展本地草稿流程模拟', '受保护的单篇 HTML 保真草稿实现（待真实账号人工验收）'],
+    plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
     realActionPolicy: {
-      upload: 'requires-explicit-authorization',
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'stage4-explicit-confirmation-only',
       publish: 'not-supported',
       excelWrite: 'requires-explicit-authorization',
       archiveMove: 'requires-explicit-authorization',
     },
-    evidence: ['公开源码存在适配器；用户反馈搜狐表格存在问题'],
-    risks: ['表格保真、转条目、转图片方案均未验收'],
+    evidence: ['自动测试覆盖 HTML/图注回读、登录失败、任务授权、快照变化、图片失败与公开发布拒绝'],
+    risks: ['尚未使用专用搜狐号测试账号确认平台对表格、图片锚点与可见图注的实际保存行为，因此 verified/saveDraft 仍为 false'],
   },
   {
     id: 'netease',
@@ -196,17 +197,23 @@ export function checkRealActionGate({ action, platform, authorization } = {}) {
     && authorization?.stage === '3-zhihu-draft'
     && authorization?.userConfirmed === true
     && authorization?.snapshotVerified === true;
+  const stage4SohuDraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'sohu'
+    && authorization?.stage === '4-sohu-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
+  const guardedDraftAllowed = stage3DraftAllowed || stage4SohuDraftAllowed;
   return {
-    allowed: stage3DraftAllowed,
+    allowed: guardedDraftAllowed,
     action: actionKey,
     actionName: ACTIONS[actionKey] || actionKey || '未知动作',
     platform: platformKey,
     platformName: platformInfo?.name || platformKey || '未知平台',
     policy,
-    reason: stage3DraftAllowed
-      ? '仅允许当前已确认且快照复核通过的单篇知乎保存草稿动作；不包含公开发布。'
+    reason: guardedDraftAllowed
+      ? `仅允许当前已确认且快照复核通过的单篇${platformInfo?.name || platformKey}保存草稿动作；不包含公开发布。`
       : knownAction
-      ? '真实动作默认关闭。仅 Stage 3 中经用户当次确认、快照复核通过的知乎 saveDraft 可获准。'
+      ? '真实动作默认关闭。仅独立验收阶段中经用户当次确认、快照复核通过的知乎或搜狐 saveDraft 可获准。'
       : '未知真实动作不在允许清单中。',
     requirements: BASE_REQUIREMENTS,
   };

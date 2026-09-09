@@ -83,7 +83,7 @@ function guardedDraft(platform: { id: string; name: string }): Capability {
   return {
     kind: 'guarded-draft', label: '一键发布（仅保存草稿）', platform,
     tags: ['单篇', '保存草稿', '禁止公开发布'],
-    explain: '仅在当次勾选确认、服务端不可变快照复核和知乎登录检查通过后保存一篇草稿；不会公开发布、写 Excel 或移动文件。',
+    explain: `仅在当次确认、服务端不可变快照复核和${platform.name}登录检查通过后保存一篇草稿；不会公开发布、写 Excel 或移动文件。`,
   }
 }
 function notReady(why: string): Capability {
@@ -109,7 +109,7 @@ function capabilityFor(segments: string[], catalog: CapabilityPlatform[]): Capab
     'not-adapted': 'unsupported',
   } as Record<string, string>)[platform.status]
   if (workflow === 'official-simulation') return publishPreview(platform.id, platform.name)
-  if (workflow === 'guarded-draft' && platform.id === 'zhihu') return guardedDraft({ id: platform.id, name: platform.name })
+  if (workflow === 'guarded-draft') return guardedDraft({ id: platform.id, name: platform.name })
   if (workflow === 'draft-simulation') return draftPreview({ id: platform.id, name: platform.name })
   return notReady('该平台尚未接入适配器')
 }
@@ -323,7 +323,13 @@ const FALLBACK_PLATFORM_CAPABILITIES: CapabilityPlatform[] = [
     status: 'simulation-ready', workflow: 'official-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
   })),
   ...[
-    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']], ['netease', '网易号', ['网易', '网易号']],
+    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']],
+  ].map(([id, name, aliases]) => ({
+    id: id as string, name: name as string, aliases: aliases as string[], group: '主流平台',
+    status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: [], plannedActions: [], evidence: [], risks: [],
+  })),
+  ...[
+    ['netease', '网易号', ['网易', '网易号']],
   ].map(([id, name, aliases]) => ({
     id: id as string, name: name as string, aliases: aliases as string[], group: '主流平台',
     status: 'draft-simulation', workflow: 'draft-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
@@ -559,8 +565,8 @@ export function Workbench() {
   const [checklist, setChecklist] = useState<RealExecutionChecklist | null>(null)
   const [checklistBusy, setChecklistBusy] = useState(false)
   const [checklistNote, setChecklistNote] = useState('')
-  const [zhihuBusy, setZhihuBusy] = useState(false)
-  const [zhihuNote, setZhihuNote] = useState('')
+  const [guardedDraftBusy, setGuardedDraftBusy] = useState(false)
+  const [guardedDraftNote, setGuardedDraftNote] = useState('')
   const [acceptanceChecks, setAcceptanceChecks] = useState<AcceptanceCheck[]>([])
   const [acceptanceBusy, setAcceptanceBusy] = useState(false)
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidence | null>(null)
@@ -605,7 +611,7 @@ export function Workbench() {
   useEffect(() => {
     chrome.storage.local.get(ACCEPTANCE_EVIDENCE_KEY).then((stored) => {
       const evidence = stored[ACCEPTANCE_EVIDENCE_KEY]
-      if (evidence?.schema === 'yizao-stage3-zhihu-acceptance-evidence') setAcceptanceEvidence(evidence)
+      if (['yizao-stage3-zhihu-acceptance-evidence', 'yizao-guarded-draft-acceptance-evidence'].includes(evidence?.schema)) setAcceptanceEvidence(evidence)
     })
   }, [])
 
@@ -890,7 +896,8 @@ export function Workbench() {
   }
 
   async function runAcceptanceCheck() {
-    setAcceptanceBusy(true); setZhihuNote(''); setDetailError('')
+    const platform = openCap?.platform
+    setAcceptanceBusy(true); setGuardedDraftNote(''); setDetailError('')
     const checks = new Map<string, AcceptanceCheck>()
     const mark = (key: string, label: string, ok: boolean, detailText: string) => checks.set(key, { key, label, ok, detail: detailText })
     let checked: PreflightResponse | null = null
@@ -923,18 +930,19 @@ export function Workbench() {
         matched.ok && runtimeMatched ? `${EXTENSION_BUILD_ID} · extension ${extensionVersion}` : [...matched.reasons, ...(runtimeMatched ? [] : ['服务能力表构建标识不匹配'])].join('；'))
 
       try {
-        const authResult = await chrome.runtime.sendMessage({ type: 'CHECK_AUTH', payload: { platformId: 'zhihu' } }) as { auth?: { isAuthenticated?: boolean; error?: string } }
+        if (!platform) throw new Error('尚未选择受保护草稿平台')
+        const authResult = await chrome.runtime.sendMessage({ type: 'CHECK_AUTH', payload: { platformId: platform.id } }) as { auth?: { isAuthenticated?: boolean; error?: string } }
         const loggedIn = authResult?.auth?.isAuthenticated === true
-        mark('login', '知乎登录状态可用', loggedIn, loggedIn ? '当前 Chrome 会话已登录' : (authResult?.auth?.error || '当前 Chrome 会话未登录知乎'))
+        mark('login', `${platform.name}登录状态可用`, loggedIn, loggedIn ? '当前 Chrome 会话已登录' : (authResult?.auth?.error || `当前 Chrome 会话未登录${platform.name}`))
       } catch (e) {
-        mark('login', '知乎登录状态可用', false, (e as Error).message || '无法检查知乎登录状态')
+        mark('login', `${platform?.name || '平台'}登录状态可用`, false, (e as Error).message || `无法检查${platform?.name || '平台'}登录状态`)
       }
 
-      const oneArticle = Boolean(detail && openCap?.platform?.id === 'zhihu')
-      mark('article', '仅选中 1 篇知乎文章', oneArticle, oneArticle ? `packageId ${detail!.packageId}` : '请在文章库只选择一篇知乎文章')
+      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu'].includes(platform.id))
+      mark('article', `仅选中 1 篇${platform?.name || ''}文章`, oneArticle, oneArticle ? `packageId ${detail!.packageId}` : `请在文章库只选择一篇${platform?.name || ''}文章`)
       if (oneArticle) {
         try {
-          checked = await call<PreflightResponse>('preflightPackage', { packageId: detail!.packageId, platform: 'zhihu' })
+          checked = await call<PreflightResponse>('preflightPackage', { packageId: detail!.packageId, platform: platform!.id })
           setPreflight(checked)
           const executable = Boolean(checked.snapshot?.gate.executable) && (checked.snapshot?.gate.blocks.length || 0) === 0
           mark('snapshot', 'snapshot executable', executable, executable ? `snapshot ${checked.snapshot!.snapshotId}` : (checked.snapshot?.gate.blocks.join('；') || checked.summary.blocks.join('；') || '快照不可执行'))
@@ -942,7 +950,7 @@ export function Workbench() {
           mark('snapshot', 'snapshot executable', false, errMessage(e))
         }
       } else {
-        mark('snapshot', 'snapshot executable', false, '尚未选择知乎文章')
+        mark('snapshot', 'snapshot executable', false, `尚未选择${platform?.name || '平台'}文章`)
       }
       try {
         if (!preview) throw new Error('发布包没有可用的 HTML 正文')
@@ -955,13 +963,13 @@ export function Workbench() {
       }
 
       try {
-        const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'saveDraft', platform: 'zhihu' })
-        mark('draft-gate', '未确认时 zhihu.saveDraft 仍 deny', gate.allowed === false, gate.reason)
+        const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'saveDraft', platform: platform?.id || '' })
+        mark('draft-gate', `未确认时 ${platform?.id || 'platform'}.saveDraft 仍 deny`, gate.allowed === false, gate.reason)
       } catch (e) {
-        mark('draft-gate', '未确认时 zhihu.saveDraft 仍 deny', false, errMessage(e))
+        mark('draft-gate', `未确认时 ${platform?.id || 'platform'}.saveDraft 仍 deny`, false, errMessage(e))
       }
       try {
-        const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'publish', platform: 'zhihu' })
+        const gate = await call<RealActionGateCheck>('checkRealActionGate', { action: 'publish', platform: platform?.id || '' })
         mark('publish-gate', 'publish 始终 deny', gate.allowed === false, gate.reason)
       } catch (e) {
         mark('publish-gate', 'publish 始终 deny', false, errMessage(e))
@@ -975,43 +983,48 @@ export function Workbench() {
     return { ok: checks.size === 10 && [...checks.values()].every((item) => item.ok), preflight: checked, checks }
   }
 
-  async function saveZhihuDraft() {
-    if (!detail || !preview || openCap?.platform?.id !== 'zhihu') return
-    setZhihuBusy(true); setZhihuNote(''); setDetailError('')
+  async function saveGuardedDraft() {
+    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu'].includes(openCap.platform.id)) return
+    const platform = openCap.platform as { id: 'zhihu' | 'sohu'; name: string }
+    const commands = platform.id === 'zhihu'
+      ? { prepare: 'prepareZhihuDraft', begin: 'beginZhihuDraft', fail: 'failZhihuDraft', message: 'YIZAO_ZHIHU_DRAFT' }
+      : { prepare: 'prepareSohuDraft', begin: 'beginSohuDraft', fail: 'failSohuDraft', message: 'YIZAO_SOHU_DRAFT' }
+    setGuardedDraftBusy(true); setGuardedDraftNote(''); setDetailError('')
     let taskId = ''
     try {
       const acceptance = await runAcceptanceCheck()
       const checked = acceptance.preflight
       if (!acceptance.ok || !checked?.snapshot || checked.snapshot.gate.blocks.length) {
-        throw new Error('Stage 3 验收前自检未全部通过，已阻止真实草稿操作')
+        throw new Error(`${platform.name}验收前自检未全部通过，已阻止真实草稿操作`)
       }
       const userConfirmed = window.confirm(
-        `确认仅为当前文章“${detail.title}”保存一篇知乎草稿？\n\n这会向知乎发送标题、正文和图片，但不会公开发布。`
+        `确认仅为当前文章“${detail.title}”保存一篇${platform.name}草稿？\n\n这会向${platform.name}发送标题、正文和图片，但不会公开发布。`
       )
       if (!userConfirmed) {
-        setZhihuNote('已取消：未向知乎保存草稿。')
+        setGuardedDraftNote(`已取消：未向${platform.name}保存草稿。`)
         return
       }
-      const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>('prepareZhihuDraft', {
+      const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>(commands.prepare, {
         packageId: detail.packageId, userConfirmed,
       })
       if (!prepared.started || !prepared.task) {
         if (prepared.reason === 'exists') throw new Error('相同文章与快照已有任务，已阻止重复保存')
-        if (prepared.reason === 'account-busy') throw new Error('当前知乎账号已有进行中任务')
-        throw new Error(prepared.reason || '未能创建知乎草稿任务')
+        if (prepared.reason === 'account-busy') throw new Error(`当前${platform.name}账号已有进行中任务`)
+        throw new Error(prepared.reason || `未能创建${platform.name}草稿任务`)
       }
       taskId = prepared.task.taskId
       const snapshotId = prepared.task.snapshotId
-      await call('beginZhihuDraft', { taskId, snapshotId, userConfirmed })
+      await call(commands.begin, { taskId, snapshotId, userConfirmed })
       const response = await chrome.runtime.sendMessage({
-        type: 'YIZAO_ZHIHU_DRAFT',
+        type: commands.message,
         payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
       }) as { result?: Record<string, unknown>; error?: string }
-      if (response?.error || !response?.result) throw new Error(response?.error || '知乎草稿 Adapter 未返回结果')
+      if (response?.error || !response?.result) throw new Error(response?.error || `${platform.name}草稿 Adapter 未返回结果`)
       const result = response.result as { postId?: string; postUrl?: string; draftOnly?: boolean; readBackVerified?: boolean; fidelityVerified?: boolean; fidelityReport?: FidelityReport }
       const completed = await call<{ task: ServerTask }>('getTask', { taskId })
       const info = serviceInfo || await health()
       const evidence = buildAcceptanceEvidence({
+        platform: platform.id,
         timestamp: new Date().toISOString(), serviceVersion: info.version,
         protocolName: info.protocol.name, protocolVersion: info.protocol.version,
         extensionVersion, articleId: detail.packageId, packageId: detail.packageId,
@@ -1027,15 +1040,15 @@ export function Workbench() {
       })
       setAcceptanceEvidence(evidence)
       await chrome.storage.local.set({ [ACCEPTANCE_EVIDENCE_KEY]: evidence })
-      setZhihuNote(`知乎：草稿已保存；HTML 保真 ${result.fidelityReport?.overall || 'PASS'}。请在任务中心打开草稿检查；不会自动公开发布。`)
+      setGuardedDraftNote(`${platform.name}：草稿已保存；HTML 保真 ${result.fidelityReport?.overall || 'PASS'}。请在任务中心打开草稿检查；不会自动公开发布。`)
       await reloadServerTasks()
       setTab('tasks')
     } catch (e) {
-      if (taskId) await call('failZhihuDraft', { taskId, error: errMessage(e) }).catch(() => {})
-      setZhihuNote(errMessage(e))
+      if (taskId) await call(commands.fail, { taskId, error: errMessage(e) }).catch(() => {})
+      setGuardedDraftNote(errMessage(e))
       await reloadServerTasks()
     } finally {
-      setZhihuBusy(false)
+      setGuardedDraftBusy(false)
     }
   }
 
@@ -1444,11 +1457,11 @@ export function Workbench() {
           </>}
 
           {openCap?.kind === 'guarded-draft' && <>
-            <h3>一键保存到知乎草稿（Stage 3）</h3>
+            <h3>一键保存到{openCap.platform?.name}草稿（受保护单篇模式）</h3>
             <p className="hint">点击主按钮后会自动完成只读预检和 10 项安全检查；全部通过时只需在弹窗中确认一次，随后保存一篇草稿并回读核验。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
             <div className="acceptance-checks">
               <div className="row">
-                <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || zhihuBusy}>{acceptanceBusy ? '正在检查准备状态…' : '检查准备状态（可选）'}</button>
+                <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || guardedDraftBusy}>{acceptanceBusy ? '正在检查准备状态…' : '检查准备状态（可选）'}</button>
                 <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '10/10 自检通过。点击保存时仍会重新检查。' : '无需预先操作；点击保存时会自动检查。'}</span>
               </div>
               {!!acceptanceChecks.length && <ul>{acceptanceChecks.map((item) => <li key={item.key} data-check={item.ok ? 'pass' : 'fail'}>
@@ -1456,11 +1469,11 @@ export function Workbench() {
               </li>)}</ul>}
             </div>
             <div className="row">
-              <button onClick={saveZhihuDraft} disabled={!compatibility.ok || zhihuBusy || acceptanceBusy}>{zhihuBusy ? '正在自动检查并保存草稿…' : '一键保存到知乎草稿'}</button>
+              <button onClick={saveGuardedDraft} disabled={!compatibility.ok || guardedDraftBusy || acceptanceBusy}>{guardedDraftBusy ? '正在自动检查并保存草稿…' : `一键保存到${openCap.platform?.name}草稿`}</button>
               <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>
               <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成小样本验收材料（只读）'}</button>
             </div>
-            {zhihuNote && <p className={zhihuNote.includes('已保存') ? 'ok' : 'warn'}>{zhihuNote}</p>}
+            {guardedDraftNote && <p className={guardedDraftNote.includes('已保存') ? 'ok' : 'warn'}>{guardedDraftNote}</p>}
           </>}
 
           {openCap?.kind === 'not-ready' && <>

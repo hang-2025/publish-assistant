@@ -8,6 +8,8 @@ import { TASK_STATUS } from '../domain/status.mjs';
 import { checkRealActionGate } from '../lib/capabilities.mjs';
 import { zhihuAdapter } from '../platforms/zhihu/index.mjs';
 import { ZhihuDraftService } from '../services/zhihu-draft-service.mjs';
+import { sohuAdapter } from '../platforms/sohu/index.mjs';
+import { SohuDraftService } from '../services/sohu-draft-service.mjs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -77,10 +79,88 @@ test('real action gate only permits explicitly confirmed Stage 3 Zhihu saveDraft
     { action: 'archiveMove', platform: 'zhihu', authorization },
   ]) assert.equal(checkRealActionGate(input).allowed, false);
 });
+test('real action gate only permits explicitly confirmed Stage 4 Sohu saveDraft', () => {
+  const authorization = { stage: '4-sohu-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'sohu', authorization }).allowed, true);
+  for (const input of [
+    { action: 'publish', platform: 'sohu', authorization },
+    { action: 'upload', platform: 'sohu', authorization },
+    { action: 'saveDraft', platform: 'zhihu', authorization },
+    { action: 'saveDraft', platform: 'sohu' },
+    { action: 'excelWrite', platform: 'sohu', authorization },
+    { action: 'archiveMove', platform: 'sohu', authorization },
+  ]) assert.equal(checkRealActionGate(input).allowed, false);
+});
 test('Zhihu service adapter always rejects public publish', async () => {
   const result = await zhihuAdapter.publish();
   assert.equal(result.allowed, false);
   assert.equal(result.published, false);
+});
+test('Sohu service adapter exposes guarded draft workflow and rejects public publish', async () => {
+  assert.equal(sohuAdapter.workflow, 'guarded-draft');
+  assert.equal(sohuAdapter.capabilities.implementationAvailable, true);
+  assert.equal(sohuAdapter.capabilities.verified, false);
+  const result = await sohuAdapter.publish();
+  assert.equal(result.allowed, false);
+  assert.equal(result.published, false);
+});
+
+async function sohuFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage4-sohu-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  current.source.relativePath = '主流平台/搜狐/测试';
+  const service = new SohuDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', '搜狐', '测试'] }),
+  });
+  return { dir, store, service, change: () => { current = snapshot('d'.repeat(64)); current.source.relativePath = '主流平台/搜狐/测试'; } };
+}
+
+test('Sohu draft task requires immutable snapshot and verified readback', async (t) => {
+  const f = await sohuFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(prepared.task.status, TASK_STATUS.READY);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists');
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.FILLING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.SAVING_DRAFT });
+  const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '24680', postUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?spm=smmp.articlelist.0.0&contentStatus=2&id=24680',
+  } });
+  assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(done.draftResult.readBackVerified, true);
+  assert.equal(done.states.publish.status, '未发布');
+  assert.equal(done.states.excel.status, '未登记');
+  assert.equal(done.states.archive.status, '未归档');
+});
+
+test('Sohu draft task rejects untrusted URL, incomplete fidelity and source mutation', async (t) => {
+  const untrusted = await sohuFixture(); t.after(() => fs.rm(untrusted.dir, { recursive: true, force: true }));
+  const one = await untrusted.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await untrusted.service.begin({ taskId: one.task.taskId, snapshotId: one.task.snapshotId, userConfirmed: true });
+  await assert.rejects(() => untrusted.service.complete({ taskId: one.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '24680', postUrl: 'https://example.com/?contentStatus=2&id=24680',
+  } }), /URL 不受信任/);
+
+  const incomplete = await sohuFixture(); t.after(() => fs.rm(incomplete.dir, { recursive: true, force: true }));
+  const two = await incomplete.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await incomplete.service.begin({ taskId: two.task.taskId, snapshotId: two.task.snapshotId, userConfirmed: true });
+  await assert.rejects(() => incomplete.service.complete({ taskId: two.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    fidelityReport: fidelityReport({ checks: [{ key: 'title', status: 'PASS', required: true, detail: '一致' }] }),
+    postId: '24680', postUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=2&id=24680',
+  } }), /缺少必需 PASS/);
+
+  const changed = await sohuFixture(); t.after(() => fs.rm(changed.dir, { recursive: true, force: true }));
+  const three = await changed.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  changed.change();
+  await assert.rejects(() => changed.service.begin({ taskId: three.task.taskId, snapshotId: three.task.snapshotId, userConfirmed: true }), /发生变化/);
+  assert.equal((await changed.store.getTask(three.task.taskId)).status, TASK_STATUS.FAILED);
 });
 
 test('Zhihu draft task follows durable happy path and blocks duplicate', async (t) => {

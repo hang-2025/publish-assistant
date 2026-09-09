@@ -34,6 +34,7 @@ export function acceptanceChecksPassed(checks: Array<{ key: string; ok: boolean 
 }
 
 export interface AcceptanceEvidenceInput {
+  platform?: 'zhihu' | 'sohu'
   timestamp: string
   serviceVersion: string
   protocolName: string
@@ -59,8 +60,9 @@ export interface AcceptanceEvidenceInput {
 
 /** Explicit allowlist: never add article text, credentials, account data or local paths. */
 export function buildAcceptanceEvidence(input: AcceptanceEvidenceInput) {
+  const platform = input.platform || 'zhihu'
   return {
-    schema: 'yizao-stage3-zhihu-acceptance-evidence',
+    schema: platform === 'zhihu' ? 'yizao-stage3-zhihu-acceptance-evidence' : 'yizao-guarded-draft-acceptance-evidence',
     version: 2,
     acceptanceId: `acceptance-${input.taskId}-${input.snapshotId.slice(-12)}`,
     timestamp: input.timestamp,
@@ -73,7 +75,7 @@ export function buildAcceptanceEvidence(input: AcceptanceEvidenceInput) {
     snapshotId: input.snapshotId,
     contentHash: input.contentHash,
     imageCount: input.imageCount,
-    platform: 'zhihu',
+    platform,
     taskId: input.taskId,
     draft: {
       postId: input.postId,

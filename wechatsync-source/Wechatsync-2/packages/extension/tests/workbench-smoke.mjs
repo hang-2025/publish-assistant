@@ -72,11 +72,11 @@ try {
   await page.getByRole('button', { name: /智能雷暴仪预警应用/ }).waitFor()
   assert.equal(await page.locator('.source-group').count(), 2, '应按知乎/搜狐分成两个平台区块')
   assert.equal(await page.locator('.category-group').count(), 3, '知乎两个产品分类，搜狐一个产品分类')
-  // 阶段1B：知乎/搜狐卡片应为「草稿流程预览」并带能力标签；绝不能出现真实成功文案。
+  // 知乎/搜狐均为受保护单篇草稿入口；绝不能在未执行时出现真实成功文案。
   assert.equal(await page.locator('.pkg').count(), 4, '应显示 4 张文章卡片')
   const pkgActions = page.locator('.pkg-action')
   assert.equal(await pkgActions.count(), 4, '每张卡片都有一个能力动作文案')
-  for (let i = 0; i < 4; i++) assert.equal((await pkgActions.nth(i).innerText()).trim(), '草稿流程预览', '知乎/搜狐卡片一律为「草稿流程预览」')
+  for (let i = 0; i < 4; i++) assert.equal((await pkgActions.nth(i).innerText()).trim(), '一键发布（仅保存草稿）', '知乎/搜狐卡片一律为受保护单篇草稿入口')
   assert.equal(await page.locator('.tag').count() > 0, true, '卡片应有能力标签')
   const libraryBody = await page.locator('main').innerText()
   assert.equal(libraryBody.includes('一键发布成功'), false, '绝不能出现「一键发布成功」')
@@ -103,9 +103,10 @@ try {
   await page.getByRole('button', { name: /ALT 冲突测试包/ }).click()
   await page.locator('details.article-inspection > summary').click()
   await page.getByText('ALT 文案冲突，模拟校验会停止').waitFor()
-  await page.getByRole('button', { name: /创建模拟草稿任务/ }).click()
-  await page.locator('.task-step', { hasText: '失败' }).waitFor()
-  await page.getByText(/未上传、未保存草稿、未登记、未归档/).waitFor()
+  const guardedButton = page.getByRole('button', { name: /一键保存到搜狐号草稿/ })
+  await guardedButton.waitFor()
+  assert.equal(await guardedButton.isDisabled(), true, '版本/服务检查未通过时受保护草稿按钮必须禁用')
+  assert.equal(await page.getByText(/草稿已保存/).count(), 0, '未执行时不得显示草稿成功')
 
   // 人工构造一个“重启时仍在保存”的任务，刷新后必须变为结果未知且不自动重发。
   await page.evaluate(async () => {
@@ -124,7 +125,7 @@ try {
   await page.locator('.task-step', { hasText: '模拟完成（未保存草稿）' }).waitFor()
   await page.getByText(/没有调用知乎或其他平台/).waitFor()
   assert.deepEqual(errors, [])
-  console.log('WORKBENCH UI PASS: mocked read-only scan, sanitized preview, explicit image/ALT/caption mapping, validation stop, restart becomes unknown; no real service/account/files used.')
+  console.log('WORKBENCH UI PASS: mocked read-only scan, sanitized preview, explicit image/ALT/caption mapping, guarded action disabled on incompatible service, restart becomes unknown; no real service/account/files used.')
 } finally {
   await browser?.close()
   await new Promise((resolve) => server.close(resolve))

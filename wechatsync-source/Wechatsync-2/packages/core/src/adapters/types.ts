@@ -113,8 +113,8 @@ export interface PublishOptions {
   onImageProgress?: ImageProgressCallback
   /** 受保护草稿工作流的细粒度状态回调 */
   onDraftStage?: (stage: 'running' | 'uploading' | 'filling' | 'saving_draft') => void | Promise<void>
-  /** 由易造本地服务 beginZhihuDraft 签发并绑定任务/快照的调用上下文。 */
-  draftAuthorization?: { action: 'saveDraft'; platform: 'zhihu'; taskId: string; snapshotId: string }
+  /** 由易造本地服务受保护草稿命令签发并绑定任务/快照的调用上下文。 */
+  draftAuthorization?: { action: 'saveDraft'; platform: 'zhihu' | 'sohu'; taskId: string; snapshotId: string }
 }
 
 /**

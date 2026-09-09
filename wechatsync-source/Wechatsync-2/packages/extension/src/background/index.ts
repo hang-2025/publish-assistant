@@ -149,6 +149,55 @@ type MessageAction =
   | { type: 'GET_PREPROCESS_CONFIGS'; platforms: string[] }
   | { type: 'TRIGGER_OPEN_EDITOR' }
   | { type: 'YIZAO_ZHIHU_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
+  | { type: 'YIZAO_SOHU_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
+
+const GUARDED_DRAFT_RUNTIME = {
+  zhihu: { name: '知乎', advance: 'advanceZhihuDraft', complete: 'completeZhihuDraft', fail: 'failZhihuDraft' },
+  sohu: { name: '搜狐号', advance: 'advanceSohuDraft', complete: 'completeSohuDraft', fail: 'failSohuDraft' },
+} as const
+
+async function runGuardedDraft(
+  platform: keyof typeof GUARDED_DRAFT_RUNTIME,
+  payload: { article: any; snapshotId: string; taskId: string },
+) {
+  const config = GUARDED_DRAFT_RUNTIME[platform]
+  const { article, snapshotId, taskId } = payload
+  if (!/^snap-[0-9a-f]{24}$/.test(snapshotId || '')) return { error: `无效的${config.name}草稿快照授权` }
+  if (!/^tsk_[0-9]+_[0-9a-f]{8}$/.test(taskId || '')) return { error: `无效的${config.name}草稿任务` }
+  try {
+    const serviceInfo = await localServiceHealth()
+    const compatibility = serviceCompatibility(serviceInfo)
+    if (!compatibility.ok) throw new Error(`验收包版本不匹配：${compatibility.reasons.join('；')}。请重新加载当前验收包。`)
+    const capabilities = await callLocalService<{ runtime?: { acceptanceBuildId?: string; requiredExtensionBuildId?: string } }>('getCapabilities')
+    if (capabilities.runtime?.acceptanceBuildId !== EXTENSION_BUILD_ID
+      || capabilities.runtime?.requiredExtensionBuildId !== EXTENSION_BUILD_ID) {
+      throw new Error('服务与扩展验收构建标识不匹配，请重新加载当前验收包')
+    }
+    const auth = await checkPlatformAuth(platform)
+    if (!auth.isAuthenticated) throw new Error(auth.error || `${config.name}未登录，请先在当前 Chrome 会话登录`)
+    const adapter = await getAdapter(platform)
+    if (!adapter?.saveDraft) throw new Error(`${config.name} saveDraft Adapter 不可用`)
+    const reportStage = async (status: 'running' | 'uploading' | 'filling' | 'saving_draft') => {
+      if (status === 'running') return
+      await callLocalService(config.advance, { taskId, status, detail: `${config.name}草稿步骤：${status}` })
+    }
+    const result = await adapter.saveDraft(article, {
+      draftOnly: true,
+      onDraftStage: reportStage,
+      draftAuthorization: { action: 'saveDraft', platform, taskId, snapshotId },
+    })
+    if (!result.success || !result.draftOnly || !result.readBackVerified || !result.fidelityVerified) {
+      const error = result.error || `${config.name}草稿已保存但 HTML 内容保真校验失败，不能标记已验收；请人工检查草稿且不要重复点击`
+      await callLocalService(config.fail, { taskId, error, fidelityReport: result.fidelityReport }).catch(() => {})
+      return { error, result }
+    }
+    await callLocalService(config.complete, { taskId, result })
+    return { result }
+  } catch (error) {
+    await callLocalService(config.fail, { taskId, error: (error as Error).message }).catch(() => {})
+    return { error: (error as Error).message }
+  }
+}
 
 /**
  * 消息处理
@@ -208,42 +257,11 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'YIZAO_ZHIHU_DRAFT': {
-      const { article, snapshotId, taskId } = message.payload
-      if (!/^snap-[0-9a-f]{24}$/.test(snapshotId || '')) return { error: '无效的知乎草稿快照授权' }
-      if (!/^tsk_[0-9]+_[0-9a-f]{8}$/.test(taskId || '')) return { error: '无效的知乎草稿任务' }
-      try {
-        const serviceInfo = await localServiceHealth()
-        const compatibility = serviceCompatibility(serviceInfo)
-        if (!compatibility.ok) throw new Error(`验收包版本不匹配：${compatibility.reasons.join('；')}。请重新加载当前验收包。`)
-        const capabilities = await callLocalService<{ runtime?: { acceptanceBuildId?: string; requiredExtensionBuildId?: string } }>('getCapabilities')
-        if (capabilities.runtime?.acceptanceBuildId !== EXTENSION_BUILD_ID
-          || capabilities.runtime?.requiredExtensionBuildId !== EXTENSION_BUILD_ID) {
-          throw new Error('服务与扩展验收构建标识不匹配，请重新加载当前验收包')
-        }
-        const auth = await checkPlatformAuth('zhihu')
-        if (!auth.isAuthenticated) throw new Error(auth.error || '知乎未登录，请先在当前 Chrome 会话登录')
-        const adapter = await getAdapter('zhihu')
-        if (!adapter?.saveDraft) throw new Error('知乎 saveDraft Adapter 不可用')
-        const reportStage = async (status: 'running' | 'uploading' | 'filling' | 'saving_draft') => {
-          if (status === 'running') return
-          await callLocalService('advanceZhihuDraft', { taskId, status, detail: `知乎草稿步骤：${status}` })
-        }
-        const result = await adapter.saveDraft(article, {
-          draftOnly: true,
-          onDraftStage: reportStage,
-          draftAuthorization: { action: 'saveDraft', platform: 'zhihu', taskId, snapshotId },
-        })
-        if (!result.success || !result.draftOnly || !result.readBackVerified || !result.fidelityVerified) {
-          const error = result.error || '知乎草稿已保存但 HTML 内容保真校验失败，不能标记 Stage 3 verified；请人工检查草稿且不要重复点击'
-          await callLocalService('failZhihuDraft', { taskId, error, fidelityReport: result.fidelityReport }).catch(() => {})
-          return { error, result }
-        }
-        await callLocalService('completeZhihuDraft', { taskId, result })
-        return { result }
-      } catch (error) {
-        await callLocalService('failZhihuDraft', { taskId, error: (error as Error).message }).catch(() => {})
-        return { error: (error as Error).message }
-      }
+      return runGuardedDraft('zhihu', message.payload)
+    }
+
+    case 'YIZAO_SOHU_DRAFT': {
+      return runGuardedDraft('sohu', message.payload)
     }
 
     case 'SYNC_ARTICLE': {

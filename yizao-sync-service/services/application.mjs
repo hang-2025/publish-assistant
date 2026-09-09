@@ -21,6 +21,7 @@ import { TaskRepository } from '../repositories/task-repository.mjs';
 import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
 import { ArticleService } from './article-service.mjs';
 import { ZhihuDraftService } from './zhihu-draft-service.mjs';
+import { SohuDraftService } from './sohu-draft-service.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { createLocalApiServer } from '../routes/local-api.mjs';
 import { platformRegistry } from '../platforms/registry.mjs';
@@ -36,7 +37,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *   Authorization: Bearer <token>；令牌首次启动时生成，写入 data/token 文件并打印一次，
  *   由用户手工粘贴到插件工作台完成配对——任何匿名接口都不发放令牌，
  *   令牌不出现在 URL、查询参数和日志中；
- * - 命令走白名单（合计 25 条）：
+ * - 命令走白名单（合计 30 条）：
  *     · 阶段1A 4 条：getConfig / setConfig / scan / getPackage；
  *     · 阶段1B 5 条：prepareOfficialTask / simulateOfficialTask / getTasks / getTask / removeTask；
  *     · 阶段1C 1 条：previewExcelRegistration（只读登记匹配预览）；
@@ -49,6 +50,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *     · 阶段2F 1 条：confirmArchivedSimulated（人工确认归档的模拟状态更新）；
  *     · 阶段2I 1 条：generateRealExecutionChecklist（真实执行验收单，只读生成）；
  *     · 阶段3 5 条：prepare/begin/advance/complete/failZhihuDraft（仅知乎保存草稿）；
+ *     · 阶段4 5 条：prepare/begin/advance/complete/failSohuDraft（仅搜狐号保存草稿）；
  *   payload 用严格 schema（assertAllowedKeys），不接受任意路径/URL/命令名；
  * - getPackage / 发送快照只接受扫描时签发的受控 packageId，不接受任何路径；
  *   服务端用 realpath（解析 junction/符号链接）复核包与每张图片仍位于授权根目录之内。
@@ -491,7 +493,22 @@ async function loadZhihuDraftSnapshot(packageId) {
   return { ...context, snapshot };
 }
 
+async function loadSohuDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'sohu') {
+    throw new Error(`发布包与搜狐不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
+
 const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
+const sohuDraftService = new SohuDraftService({ store, loadSnapshot: loadSohuDraftSnapshot });
 
 async function cmdPrepareZhihuDraft(payload) {
   assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
@@ -522,6 +539,37 @@ async function cmdCompleteZhihuDraft(payload) {
 async function cmdFailZhihuDraft(payload) {
   assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
   return { mode: 'zhihu-draft', task: sanitizeTask(await zhihuDraftService.fail(payload || {})) };
+}
+
+async function cmdPrepareSohuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('sohu').createTask({
+    createDraftTask: () => sohuDraftService.prepare(payload || {}),
+  });
+  return { mode: 'sohu-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginSohuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('sohu').saveDraft({
+    saveDraft: () => sohuDraftService.begin(payload || {}),
+  });
+  return { mode: 'sohu-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceSohuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'sohu-draft', task: sanitizeTask(await sohuDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteSohuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'sohu-draft', task: sanitizeTask(await sohuDraftService.complete(payload || {})) };
+}
+
+async function cmdFailSohuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'sohu-draft', task: sanitizeTask(await sohuDraftService.fail(payload || {})) };
 }
 
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
@@ -762,16 +810,18 @@ async function cmdPreflightPackage(payload) {
   const warnings = [];
 
   let snapshotPreview = null;
-  if (siteKey || requestedPlatform === 'zhihu') {
+  const guardedDraftPlatform = platformRegistry.get(requestedPlatform)?.workflow === 'guarded-draft';
+  if (siteKey || guardedDraftPlatform) {
     if (siteKey) enforcePackageSiteBinding({ packageId: payload.packageId, relativePath, siteKey });
     const snapshot = await buildSendSnapshot({
       info, readAsset,
       source: { packageId: payload.packageId, rootName, relativePath },
       requireAltPerImage: true,
     });
+    const guardedAdapter = platformRegistry.get(requestedPlatform);
     const preview = siteKey
       ? buildPublishPreview({ snapshot, siteKey })
-      : { platformName: '知乎', account: '当前 Chrome 知乎会话', finalAction: '保存草稿后等待用户检查' };
+      : { platformName: guardedAdapter?.name || requestedPlatform, account: `当前 Chrome ${guardedAdapter?.name || requestedPlatform}会话`, finalAction: '保存草稿后等待用户检查' };
     snapshotPreview = {
       siteKey: siteKey || requestedPlatform,
       platformName: preview.platformName,
@@ -1146,6 +1196,11 @@ const COMMANDS = {
   advanceZhihuDraft: cmdAdvanceZhihuDraft,
   completeZhihuDraft: cmdCompleteZhihuDraft,
   failZhihuDraft: cmdFailZhihuDraft,
+  prepareSohuDraft: cmdPrepareSohuDraft,
+  beginSohuDraft: cmdBeginSohuDraft,
+  advanceSohuDraft: cmdAdvanceSohuDraft,
+  completeSohuDraft: cmdCompleteSohuDraft,
+  failSohuDraft: cmdFailSohuDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 
@@ -1205,7 +1260,7 @@ export async function startApplication() {
     } else {
       console.log('令牌已存在（如需查看：node server.mjs --print-token）');
     }
-    console.log('白名单命令（25 条）：原有 20 条只读/模拟命令；Stage 3 新增 prepare/begin/advance/complete/failZhihuDraft（仅知乎保存草稿）。');
+    console.log('白名单命令（30 条）：原有 20 条只读/模拟命令；知乎与搜狐号各新增 5 条受保护草稿握手命令。');
     console.log('包↔平台绑定：prepare/simulate 只允许把包发往其受控目录推导出的站点，不匹配直接拒绝。');
     console.log('Stage 3：仅受保护的知乎单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
     console.log('不提供公开发布/Excel 写入登记/真实归档命令，不启动旧执行器，不修改文章与 Excel。');

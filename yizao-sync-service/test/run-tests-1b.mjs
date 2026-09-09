@@ -146,6 +146,13 @@ await makePackage(path.join(UNPUB, '主流平台', '知乎', '智能防雷系统
   htmlImgs: ['1-img.png'],
   htmlAlts: [''],
 });
+// 搜狐夹具：Stage 4 只验证受保护任务握手与回读证据，不访问搜狐网络。
+await makePackage(path.join(UNPUB, '主流平台', '搜狐', '智能防雷系统', '2026-09-02', '搜狐验收包J'), {
+  images: ['1-img.png'],
+  alts: ['搜狐测试 ALT'],
+  htmlImgs: ['1-img.png'],
+  htmlAlts: [''],
+});
 // 官网 eyzao.cn 夹具：用于验证「同是官网包也不能串站点」，以及站点锁互斥（未被任务键占用）
 await makePackage(path.join(UNPUB, '官网', 'eyzao.cn', '易造新闻', '2026-09-02', '官网CN包H'), {
   images: ['1-img.png'],
@@ -1500,6 +1507,43 @@ test('Stage 3 HTTP：知乎草稿需确认、快照、顺序状态与回读证�
   assert.equal(complete.json.task.archive.status, '未归档');
   const remove = await call({ command: 'removeTask', payload: { taskId } });
   assert.equal(remove.status, 422, '真实草稿任务审计记录不可删除');
+});
+
+test('Stage 4 HTTP：搜狐草稿命令保持确认、平台绑定、快照与回读证据边界', async () => {
+  const pkg = scannedRef.map.get('搜狐验收包J');
+  assert.ok(pkg);
+  const preflight = await call({ command: 'preflightPackage', payload: { packageId: pkg.packageId, platform: 'sohu' } });
+  assert.equal(preflight.status, 200, JSON.stringify(preflight.json));
+  assert.equal(preflight.json.snapshot.siteKey, 'sohu');
+  assert.equal(preflight.json.snapshot.gate.executable, true);
+
+  const denied = await call({ command: 'prepareSohuDraft', payload: { packageId: pkg.packageId, userConfirmed: false } });
+  assert.equal(denied.status, 422);
+  const prepared = await call({ command: 'prepareSohuDraft', payload: { packageId: pkg.packageId, userConfirmed: true } });
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.json));
+  assert.equal(prepared.json.task.status, 'ready');
+  const { taskId, snapshotId } = prepared.json.task;
+
+  const begin = await call({ command: 'beginSohuDraft', payload: { taskId, snapshotId, userConfirmed: true } });
+  assert.equal(begin.json.task.status, 'running');
+  for (const status of ['uploading', 'filling', 'saving_draft']) {
+    const progress = await call({ command: 'advanceSohuDraft', payload: { taskId, status } });
+    assert.equal(progress.json.task.status, status);
+  }
+  const complete = await call({ command: 'completeSohuDraft', payload: { taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    fidelityReport: {
+      schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+      summary: { pass: 12, degraded: 0, unsupported: 0, fail: 0 },
+      checks: ['title', 'main-block-order', 'inline-emphasis', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'trusted-draft-url', 'draft-only', 'read-back-verified']
+        .map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
+    },
+    postId: '24680', postUrl: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?contentStatus=2&id=24680',
+  } } });
+  assert.equal(complete.json.task.status, 'waiting_confirmation');
+  assert.equal(complete.json.task.publish.status, '未发布');
+  assert.equal(complete.json.task.excel.status, '未登记');
+  assert.equal(complete.json.task.archive.status, '未归档');
 });
 
 test('1B HTTP：严格 schema——拒绝未知参数/非法 taskId/站点键，日志不含正文与令牌', async () => {

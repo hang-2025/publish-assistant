@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { importDocument, resolveImage, sanitizeHtml, previewDocument, withoutDuplicateTitle } from '../src/local-import/importer'
 import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
+import { SohuAdapter } from '../../core/src/adapters/platforms/sohu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -19,6 +20,7 @@ function file(name: string, content: string | Uint8Array, path = name, type = ''
 }
 const png = () => file('中文 图.png', new Uint8Array([137,80,78,71]), '发布包/配图/中文 图.png', 'image/png')
 const draftAuthorization = { action: 'saveDraft' as const, platform: 'zhihu' as const, taskId: 'tsk_12345678_deadbeef', snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa' }
+const sohuDraftAuthorization = { action: 'saveDraft' as const, platform: 'sohu' as const, taskId: 'tsk_12345678_cafebabe', snapshotId: 'snap-bbbbbbbbbbbbbbbbbbbbbbbb' }
 
 function zhihuRuntime(fetchImpl: (url: string, options?: RequestInit) => Promise<Response>) {
   return {
@@ -94,6 +96,57 @@ describe('guarded Zhihu draft adapter', () => {
     expect(result.success).toBe(false)
     expect(result.error).toContain('任务/快照授权')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('guarded Sohu draft adapter', () => {
+  it('rejects public publish and taskless saveDraft', async () => {
+    const adapter = new SohuAdapter()
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    await adapter.init(zhihuRuntime(fetchMock))
+    await expect(adapter.publish({ title: 'x', html: '<p>x</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('任务/快照授权')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('saves one draft and only reports success after Sohu readback matches', async () => {
+    const stages: string[] = []
+    let savedContent = ''
+    const adapter = new SohuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.includes('/mpbp/bp/account/list')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accounts: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
+      if (url.includes('/news/v4/news/draft/v2') && options?.method === 'POST') {
+        savedContent = JSON.parse(String(options.body)).content
+        return new Response(JSON.stringify({ success: true, data: 24680 }), { status: 200 })
+      }
+      if (url.includes('/news/v4/article?newsId=24680')) return new Response(JSON.stringify({ code: 2000000, data: { news: { id: 24680, title: '搜狐测试', content: savedContent } } }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({
+      title: '搜狐测试',
+      html: '<p>前文</p><img src="https://img.mp.sohu.com/test.png" alt="搜狐图片注释"><p><strong>后文</strong></p>',
+      markdown: '',
+    }, { draftOnly: true, draftAuthorization: sohuDraftAuthorization, onDraftStage: (stage) => stages.push(stage) })
+    expect(result.success).toBe(true)
+    expect(result.postUrl).toContain('contentStatus=2&id=24680')
+    expect(result.readBackVerified).toBe(true)
+    expect(result.fidelityVerified).toBe(true)
+    expect(savedContent).toContain('<figcaption>搜狐图片注释</figcaption>')
+    expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('does not report success when the saved content cannot be read back', async () => {
+    const adapter = new SohuAdapter()
+    await adapter.init(zhihuRuntime(async (url) => {
+      if (url.includes('/mpbp/bp/account/list')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accounts: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
+      if (url.includes('/news/v4/news/draft/v2')) return new Response(JSON.stringify({ success: true, data: 9 }), { status: 200 })
+      return new Response('{}', { status: 500 })
+    }))
+    const result = await adapter.saveDraft({ title: '搜狐测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: sohuDraftAuthorization })
+    expect(result.success).toBe(false)
+    expect(result.readBackVerified).not.toBe(true)
   })
 })
 
