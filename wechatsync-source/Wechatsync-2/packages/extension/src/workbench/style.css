@@ -25,12 +25,13 @@ button.danger { background: #fff; color: #b3261e; border-color: #b3261e; padding
 .hint { font-size: 12.5px; color: #7a86a0; margin: 4px 0; }
 .wizard-step { border: 1px solid #edf1f7; background: #fbfcff; border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
 .wizard-step h3 { margin-top: 0; }
-.setup-panel > summary, .article-inspection > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; color: #1f3a93; }
-.setup-panel > summary::-webkit-details-marker, .article-inspection > summary::-webkit-details-marker { display: none; }
-.setup-panel > summary::after, .article-inspection > summary::after { content: '展开'; flex: 0 0 auto; border: 1px solid #cbd6ec; border-radius: 7px; padding: 2px 9px; font-size: 12px; font-weight: 400; background: #f7f9fe; }
-.setup-panel[open] > summary::after, .article-inspection[open] > summary::after { content: '收起'; }
-.setup-panel > summary span, .article-inspection > summary span { margin-left: auto; color: #7a86a0; font-size: 12.5px; font-weight: 400; }
-.setup-panel > h2 { margin-top: 14px; }
+.article-inspection > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; color: #1f3a93; }
+.article-inspection > summary::-webkit-details-marker { display: none; }
+.article-inspection > summary::after { content: '展开'; flex: 0 0 auto; border: 1px solid #cbd6ec; border-radius: 7px; padding: 2px 9px; font-size: 12px; font-weight: 400; background: #f7f9fe; }
+.article-inspection[open] > summary::after { content: '收起'; }
+.article-inspection > summary span { margin-left: auto; color: #7a86a0; font-size: 12.5px; font-weight: 400; }
+.setup-page { max-width: 1000px; }
+.empty-state { text-align: center; padding: 36px 20px; }
 .article-inspection { border: 1px solid #e2e7f1; border-radius: 10px; padding: 10px 12px; margin: 12px 0; background: #fbfcff; }
 .article-inspection[open] > summary { border-bottom: 1px solid #e2e7f1; padding-bottom: 9px; margin-bottom: 10px; }
 .policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }

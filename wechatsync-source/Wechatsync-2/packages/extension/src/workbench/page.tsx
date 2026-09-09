@@ -501,7 +501,7 @@ export function Workbench() {
   const [serviceInfo, setServiceInfo] = useState<ServiceHealth | null>(null)
   const [tokenInput, setTokenInput] = useState('')
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'library' | 'tasks' | 'platforms' | 'safety'>('library')
+  const [tab, setTab] = useState<'library' | 'config' | 'tasks' | 'platforms' | 'safety'>('library')
   const [roots, setRoots] = useState<{ unpublished?: string; published?: string; archive?: string }>({})
   const [rootInputs, setRootInputs] = useState({ unpublished: '', published: '', archive: '' })
   const [excel, setExcel] = useState<{ planPath?: string; sheetName?: string }>({})
@@ -595,7 +595,9 @@ export function Workbench() {
         mappings?: { platformValues?: Record<string, string[]> }
         captionPolicy?: CaptionPolicy
       }>('getConfig')
-      setRoots({ unpublished: config.roots?.unpublished?.resolved, published: config.roots?.published?.resolved, archive: config.roots?.archive?.resolved })
+      const configuredRoots = { unpublished: config.roots?.unpublished?.resolved, published: config.roots?.published?.resolved, archive: config.roots?.archive?.resolved }
+      setRoots(configuredRoots)
+      if (!configuredRoots.unpublished) setTab('config')
       setRootInputs({ unpublished: config.roots?.unpublished?.resolved || '', published: config.roots?.published?.resolved || '', archive: config.roots?.archive?.resolved || '' })
       setExcel({ planPath: config.excel?.resolved || '', sheetName: config.excel?.sheetName || '' })
       setExcelInputs({ planPath: config.excel?.resolved || '', sheetName: config.excel?.sheetName || '' })
@@ -629,6 +631,7 @@ export function Workbench() {
       setScans({}); setDetail(null); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
       await markPackageIdsStale()
       await loadConfig()
+      if (rootInputs.unpublished.trim()) setTab('library')
     } catch (e) { setError(errMessage(e)) }
   }
 
@@ -1093,6 +1096,7 @@ export function Workbench() {
       </div>
       <nav>
         <button className={tab === 'library' ? 'on' : ''} onClick={() => setTab('library')}>文章库</button>
+        <button className={tab === 'config' ? 'on' : ''} onClick={() => setTab('config')}>配置</button>
         <button className={tab === 'platforms' ? 'on' : ''} onClick={() => { setTab('platforms'); loadCapabilities() }}>平台与账号</button>
         <button className={tab === 'safety' ? 'on' : ''} onClick={() => { setTab('safety'); loadCapabilities() }}>安全闸门</button>
         <button className={tab === 'tasks' ? 'on' : ''} onClick={() => setTab('tasks')}>任务中心（{tasks.length + serverTasks.length}）</button>
@@ -1125,12 +1129,7 @@ export function Workbench() {
 
     {error && <div role="alert" className="error">{error}</div>}
 
-    {serviceState === 'ok' && tab === 'library' && <>
-      <details className="card setup-panel" open={!roots.unpublished}>
-        <summary>
-          <strong>设置与目录</strong>
-          <span>{roots.unpublished ? '已配置，日常使用无需展开' : '首次使用，请先完成配置'}</span>
-        </summary>
+    {serviceState === 'ok' && tab === 'config' && <section className="card setup-page">
         <h2>配置向导（首次使用）</h2>
         <div className="wizard-step">
           <h3>1. 个人目录</h3>
@@ -1191,8 +1190,9 @@ export function Workbench() {
         </div>
         {roots.unpublished && <p className="hint">当前未发布目录：{roots.unpublished}{roots.published ? ` · 已发布目录：${roots.published}` : ''}{roots.archive ? ` · 归档目标：${roots.archive}` : ''}</p>}
         {excel.planPath && <p className="hint">当前登记表：{excel.planPath}{excel.sheetName ? ` · 工作表：${excel.sheetName}` : ''}（可做只读匹配预览，不写表）</p>}
-      </details>
+      </section>}
 
+    {serviceState === 'ok' && tab === 'library' && <>
       {roots.unpublished && <section className="card">
         <h2>文章库</h2>
         <div className="row">
@@ -1230,6 +1230,12 @@ export function Workbench() {
           {scans[root]!.filter((p) => !p.packageId).map((notice, index) => <p className="hint" key={`${notice.relativePath}/${index}`}>⚠ {notice.title}</p>)}
         </div>)}
         {scans.unpublished && !scans.unpublished.length && <p className="hint">未发布目录中没有识别到发布包（需要 01-SEO元数据.json / 01-SEO信息.txt / 02-后台一键复制正文.html 或 .docx 标记）。</p>}
+      </section>}
+
+      {!roots.unpublished && <section className="card empty-state">
+        <h2>尚未配置文章目录</h2>
+        <p className="hint">请先在独立配置页填写未发布目录，保存后会自动返回文章库。</p>
+        <button onClick={() => setTab('config')}>前往配置</button>
       </section>}
 
       {detail && <section className="card detail">

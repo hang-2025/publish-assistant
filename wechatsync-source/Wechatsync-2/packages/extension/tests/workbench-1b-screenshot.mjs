@@ -314,9 +314,7 @@ try {
   }
 
   await page.goto(`http://127.0.0.1:${server.address().port}/src/workbench/index.html`)
-  const setupPanel = page.locator('details.setup-panel')
-  await setupPanel.waitFor()
-  if (!(await setupPanel.evaluate((element) => element.open))) await setupPanel.locator('summary').click()
+  await page.getByRole('button', { name: '配置', exact: true }).click()
   await page.getByRole('heading', { name: '配置向导（首次使用）' }).waitFor()
   await page.getByRole('button', { name: '生成可分享模板' }).click()
   await page.getByText('已生成团队配置模板').waitFor()
@@ -325,8 +323,8 @@ try {
   assert.equal(await page.locator('main').innerText().then((t) => t.includes('图片图注策略')), true, '配置向导需要展示图注策略')
   assert.equal(await page.locator('main').innerText().then((t) => t.includes('roots.unpublished')), true, '模板导出需要明确排除个人路径')
   await shot('workbench-2b-config-wizard.png')
-  await setupPanel.locator('summary').click()
-  assert.equal(await setupPanel.evaluate((element) => element.open), false, '配置完成后可收起，日常使用不占据文章库页面')
+  await page.getByRole('button', { name: '文章库', exact: true }).click()
+  assert.equal(await page.getByRole('heading', { name: '配置向导（首次使用）' }).count(), 0, '配置向导与文章库必须是独立功能页')
 
   await page.getByRole('button', { name: '扫描未发布' }).click()
   await page.getByRole('button', { name: /易造新品发布通稿/ }).waitFor()
