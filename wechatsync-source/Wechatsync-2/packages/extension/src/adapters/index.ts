@@ -431,9 +431,13 @@ export async function syncToPlatform(
     }
 
     // 默认只保存草稿，带超时保护
+    const draftOnly = options?.draftOnly ?? true
+    const operation = draftOnly && typeof adapter.saveDraft === 'function'
+      ? adapter.saveDraft.bind(adapter)
+      : adapter.publish.bind(adapter)
     return await withTimeout(
-      adapter.publish(platformArticle, {
-        draftOnly: options?.draftOnly ?? true,
+      operation(platformArticle, {
+        draftOnly,
         onImageProgress: onImageProgress
           ? (current: number, total: number) => onImageProgress(platformId, current, total)
           : undefined,

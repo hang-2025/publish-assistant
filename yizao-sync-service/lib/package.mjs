@@ -27,7 +27,9 @@ export function parseAltFile(text) {
   for (const rawLine of stripBom(text).split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
-    const match = line.match(/^(\d+)(?:-[^\\/]+)?\.(?:jpe?g|png|webp)\s*(?:[：:]|[|｜])\s*(?:图片\s*\d+\s*[：:]\s*)?(.*)$/i);
+    // Everything after the filename delimiter is ALT content. Prefixes such
+    // as "图片1：" are content too and must survive fidelity comparison.
+    const match = line.match(/^(\d+)(?:-[^\\/]+)?\.(?:jpe?g|png|webp)\s*(?:[：:]|[|｜])\s*(.*)$/i);
     if (!match) continue;
     records.push({ number: Number(match[1]), name: line.split(/[：:|｜]/, 1)[0].trim(), alt: match[2].trim() });
   }

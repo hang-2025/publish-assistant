@@ -16,12 +16,12 @@ Local Files / read-only Excel / Future Database
 
 - Chrome Extension 的易造工作台位于 `packages/extension/src/workbench`。它负责呈现文章、平台能力和任务状态，不直接读取任意磁盘路径。
 - Local API 仅绑定 `127.0.0.1`，负责 Host、Origin、Token、请求大小、命令白名单和严格 payload 校验。
-- `yizao-sync-service/services/application.mjs` 是当前兼容应用层，保留原有 20 条命令及响应结构。
+- `yizao-sync-service/services/application.mjs` 是兼容应用层，保留原有 20 条命令并新增 5 条知乎草稿握手命令。
 - `domain` 定义统一 Article、Task 和状态词汇；旧接口通过转换层渐进接入，不要求一次性迁移。
-- `platforms` 是服务端平台 Adapter Registry。当前 Adapter 只描述能力并承接模拟入口，真实方法固定返回关闭。
+- `platforms` 是服务端 Platform Adapter Registry。知乎 Adapter 承接受保护的任务/闸门协调；其他 Adapter 仍只描述能力并承接模拟入口。
 - `repositories` 隔离 Article、Task 和 Excel 存储。当前 Article 为内存投影，Task 继续使用 JSON，Excel 只读。
 
-原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。它们不等于易造 Workbench 已启用真实能力，也不能绕过 Local API 安全闸门接入 Workbench。
+原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。Stage 3 仅复用其中的知乎 Adapter：`saveDraft()` 创建、上传、保存并回读草稿，`publish()` 明确拒绝公开发布。`packages/core/src/article/canonical.ts` 在平台 Adapter 之前把发布包 HTML 解析为可复用 Canonical Article 块模型，并负责语义渲染、`Caption = HTML img.alt` 策略与平台回读 Fidelity Report；其他网络 Adapter 不等于 Workbench 已启用真实能力。
 
 ## 2. Article 生命周期
 
@@ -59,10 +59,11 @@ saveDraft / publish / getStatus
 
 当前平台分组：
 
-- `platforms/official`：eyzao.com、eyzao.cn、yzfanglei.com 的发布流程模拟。
+- `platforms/official`：用户界面统一显示为“官方网站”平台；内部保留 eyzao.com、eyzao.cn、yzfanglei.com 三个站点 Adapter，分别执行包↔站点绑定、栏目映射与站点锁校验，当前仍为发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
-- `platforms/zhihu`、`platforms/sohu`：扩展本地草稿流程模拟的能力声明。
-- 头条、网易、小红书：`unsupported`，不得伪造草稿或发布成功。
+- `platforms/zhihu`：受保护单篇草稿协调，未完成人工验收前 `verified/saveDraft` 仍为 false。
+- `platforms/sohu`、`platforms/netease`：扩展本地草稿流程模拟的能力声明，不包含平台网络实现。
+- 头条、小红书：`unsupported`，不得伪造草稿或发布成功。
 
 新增平台时应依次修改：
 
@@ -80,7 +81,7 @@ Canonical 状态位于 `domain/status.mjs`：
 ```text
 pending → validating → ready → running
         → uploading → filling → saving_draft
-        → waiting_confirmation → published
+        → draft_saved → waiting_confirmation → published
 ```
 
 旁路状态：`failed`、`cancelled`。`domain/task.mjs` 只将旧模拟任务投影到统一结构，不改变现有 JSON 格式和用户可见中文状态。
@@ -95,20 +96,20 @@ pending → validating → ready → running
 
 ## 6. 安全边界
 
-当前构建仍然是只读 / 模拟验收版：
+当前构建只有一个严格限定的真实动作例外：
 
-- 当前仍然禁止真实上传。
+- 独立的真实上传命令仍禁止；仅知乎 `saveDraft` 内部所需图片上传随该次授权执行。
 - 当前仍然禁止最终公开发布。
 - 当前仍然禁止 Excel 写入。
 - 当前仍然禁止文件移动、删除和真实归档。
-- `checkRealActionGate` 对真实动作始终返回 `allowed=false`。
-- Platform Adapter 的 `saveDraft()`、`publish()` 不执行外部动作。
+- `checkRealActionGate` 默认拒绝；只在 `zhihu + saveDraft + 当次确认 + 快照复核` 四项同时成立时允许。
+- 知乎 Platform Adapter 的 `publish()` 拒绝；其他平台的 `saveDraft()`、`publish()` 继续拒绝。
 - 不能绕过 Host、Origin、Token、扩展 ID 绑定、packageId、realpath、站点绑定、请求大小和命令白名单验证。
 - `archive-sim.mjs` 的复制算法只在临时测试夹具中验证，没有暴露为 HTTP Command。
 
 ## 7. 后续路线
 
-下一阶段：真实草稿闭环。只选择一个平台、一个测试账号、一篇小样本，完成显式授权、发送快照、草稿保存、结果回读和人工验收，仍不自动公开发布。
+当前 Stage 3 下一步是用 Windows v3.2 验收包、一个专用知乎测试账号和一篇非敏感 HTML 小样本完成人工验收。草稿 ID、标题或非空正文本身都不是完成证据；必需保真项还必须全部 PASS。在此之前不得把 capability 标为已验证。
 
 再下一阶段：人工确认后的发布登记。将正式 URL、人工确认来源和状态证据纳入任务记录。
 

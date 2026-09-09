@@ -6,9 +6,11 @@
  */
 
 import { platformArchitectureMetadata } from '../platforms/registry.mjs';
+import { ACCEPTANCE_BUILD, LOCAL_PROTOCOL, SERVICE_VERSION } from './build-info.mjs';
 
 export const ACTIONS = {
-  upload: '真实上传/保存草稿',
+  upload: '真实上传',
+  saveDraft: '保存草稿',
   publish: '公开发布',
   excelWrite: 'Excel 写入登记',
   archiveMove: '移动/归档文章包',
@@ -90,17 +92,18 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     id: 'zhihu',
     name: '知乎',
     group: '主流平台',
-    status: 'draft-simulation',
-    currentActions: ['只读扫描', '扩展本地草稿流程模拟'],
-    plannedActions: ['保存草稿', '打开草稿给用户人工发布'],
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '扩展本地草稿流程模拟', '受保护的单篇 HTML 保真草稿实现（待真实账号人工验收）'],
+    plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
     realActionPolicy: {
-      upload: 'requires-explicit-authorization',
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'stage3-explicit-confirmation-only',
       publish: 'not-supported',
       excelWrite: 'requires-explicit-authorization',
       archiveMove: 'requires-explicit-authorization',
     },
-    evidence: ['用户反馈排版大体正常；仍需结构化真实草稿验收'],
-    risks: ['未接入结果回读与草稿 URL 持久登记'],
+    evidence: ['自动测试覆盖 Canonical HTML、Caption=img.alt、平台回读保真、登录失败、重复任务、快照变化、图片失败与重启恢复'],
+    risks: ['尚未使用专用知乎测试账号确认平台对各语义块与 140 字 Caption 验收策略的实际表现，因此 verified/saveDraft 仍为 false'],
   },
   {
     id: 'sohu',
@@ -118,9 +121,26 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     evidence: ['公开源码存在适配器；用户反馈搜狐表格存在问题'],
     risks: ['表格保真、转条目、转图片方案均未验收'],
   },
-  ...['toutiao', 'netease', 'xiaohongshu'].map((id) => ({
+  {
+    id: 'netease',
+    name: '网易号',
+    group: '主流平台',
+    status: 'draft-simulation',
+    currentActions: ['只读扫描', '扩展本地草稿流程模拟'],
+    plannedActions: ['调研网易号编辑器', '用非敏感小样本验收保存草稿'],
+    realActionPolicy: {
+      upload: 'not-supported',
+      saveDraft: 'not-supported',
+      publish: 'not-supported',
+      excelWrite: 'requires-explicit-authorization',
+      archiveMove: 'requires-explicit-authorization',
+    },
+    evidence: ['通用 Platform Adapter 与扩展本地模拟任务已接入；不包含平台网络实现'],
+    risks: ['网易号登录、编辑器结构、图片与正文保真均未做真实账号验收'],
+  },
+  ...['toutiao', 'xiaohongshu'].map((id) => ({
     id,
-    name: ({ toutiao: '头条号', netease: '网易号', xiaohongshu: '小红书' })[id],
+    name: ({ toutiao: '头条号', xiaohongshu: '小红书' })[id],
     group: '待适配平台',
     status: 'not-adapted',
     currentActions: ['只读扫描'],
@@ -150,30 +170,43 @@ export const PLATFORM_CAPABILITIES = LEGACY_PLATFORM_CAPABILITIES.map((platform)
 export function getCapabilities() {
   return {
     version: 2,
-    phase: '2J-acceptance-materials',
+    phase: '3-zhihu-draft-unverified',
     generatedAt: new Date().toISOString(),
     realActionsEnabled: false,
+    runtime: {
+      serviceVersion: SERVICE_VERSION,
+      protocol: LOCAL_PROTOCOL,
+      acceptanceBuildId: ACCEPTANCE_BUILD.id,
+      requiredExtensionBuildId: ACCEPTANCE_BUILD.extensionBuildId,
+    },
     requirementsBeforeRealActions: BASE_REQUIREMENTS,
     actions: ACTIONS,
     platforms: PLATFORM_CAPABILITIES,
   };
 }
 
-export function checkRealActionGate({ action, platform }) {
+export function checkRealActionGate({ action, platform, authorization } = {}) {
   const actionKey = String(action || '').trim();
   const platformKey = String(platform || '').trim();
   const platformInfo = PLATFORM_CAPABILITIES.find((p) => p.id === platformKey) || null;
   const knownAction = Object.prototype.hasOwnProperty.call(ACTIONS, actionKey);
   const policy = platformInfo?.realActionPolicy?.[actionKey] || (knownAction ? 'requires-explicit-authorization' : 'unknown-action');
+  const stage3DraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'zhihu'
+    && authorization?.stage === '3-zhihu-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
   return {
-    allowed: false,
+    allowed: stage3DraftAllowed,
     action: actionKey,
     actionName: ACTIONS[actionKey] || actionKey || '未知动作',
     platform: platformKey,
     platformName: platformInfo?.name || platformKey || '未知平台',
     policy,
-    reason: knownAction
-      ? '当前构建是只读/模拟版本，真实动作未启用。需要用户另行授权、执行器验收和回退方案确认后，才能进入真实阶段。'
+    reason: stage3DraftAllowed
+      ? '仅允许当前已确认且快照复核通过的单篇知乎保存草稿动作；不包含公开发布。'
+      : knownAction
+      ? '真实动作默认关闭。仅 Stage 3 中经用户当次确认、快照复核通过的知乎 saveDraft 可获准。'
       : '未知真实动作不在允许清单中。',
     requirements: BASE_REQUIREMENTS,
   };

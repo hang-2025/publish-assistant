@@ -20,9 +20,12 @@ const taskKey = `pkg-official|eyzao.com|eyzao.com-占位账号|${cv}`
 
 const packages = [
   { packageId: 'pkg-official', relativePath: '官网/eyzao.com/易造新闻/2026-09-01/官网正常包', segments: ['官网', 'eyzao.com', '易造新闻', '2026-09-01', '官网正常包'], title: '易造新品发布通稿（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
+  { packageId: 'pkg-official-cn', relativePath: '官网/eyzao.cn/易造新闻/2026-09-02/官网CN包', segments: ['官网', 'eyzao.cn', '易造新闻', '2026-09-02', '官网CN包'], title: '易造中文官网文章（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
+  { packageId: 'pkg-official-lightning', relativePath: '官网/yzfanglei.com/智能防雷系统/2026-09-03/防雷官网包', segments: ['官网', 'yzfanglei.com', '智能防雷系统', '2026-09-03', '防雷官网包'], title: '易造防雷官网文章（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-baijiahao', relativePath: '主流平台/百家号/易造科技/2026-09-02/百家号包', segments: ['主流平台', '百家号', '易造科技', '2026-09-02', '百家号包'], title: '百家号图文（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-zhihu', relativePath: '主流平台/zhihu/智能雷暴仪/2026-09-02/知乎包', segments: ['主流平台', 'zhihu', '智能雷暴仪', '2026-09-02', '知乎包'], title: '智能雷暴仪预警应用', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-toutiao', relativePath: '主流平台/toutiao/智能雷暴仪/2026-09-03/头条包', segments: ['主流平台', 'toutiao', '智能雷暴仪', '2026-09-03', '头条包'], title: '雷电预警头条版（待适配）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['待适配平台，仅只读展示'] },
+  { packageId: 'pkg-netease', relativePath: '主流平台/网易号/智能雷暴仪/2026-09-04/网易包', segments: ['主流平台', '网易号', '智能雷暴仪', '2026-09-04', '网易包'], title: '雷电预警网易版（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['网易草稿流程仅本地模拟'] },
 ]
 
 function packageDetail(pkg) {
@@ -114,6 +117,25 @@ const preflight = {
   notice: '阶段2A总预演只读：未上传、未公开发布、未写 Excel、未移动或归档文件。',
 }
 
+const zhihuPreflight = {
+  ...preflight,
+  package: { packageId: 'pkg-zhihu', rootName: 'unpublished', relativePath: packages[2].relativePath, title: packages[2].title },
+  platform: { requested: 'zhihu', siteKey: '', derived: ['zhihu'], reason: 'ok' },
+  snapshot: {
+    ...preflight.snapshot,
+    siteKey: 'zhihu', platformName: '知乎', account: '当前 Chrome 知乎会话', finalAction: '保存草稿后等待用户检查',
+    contentVersion: cv, snapshotId: 'snap-' + '8'.repeat(24),
+  },
+  registration: { configured: false, status: 'missing-config', notice: '未配置 Excel；不影响草稿验收。' },
+  gates: {
+    upload: { allowed: false, actionName: '真实上传', reason: '独立上传关闭', policy: 'not-supported-as-standalone-action' },
+    publish: { allowed: false, actionName: '公开发布', reason: '公开发布永久关闭', policy: 'not-supported' },
+    excelWrite: { allowed: false, actionName: 'Excel 写入登记', reason: '关闭', policy: 'requires-explicit-authorization' },
+    archiveMove: { allowed: false, actionName: '移动/归档文章包', reason: '关闭', policy: 'requires-explicit-authorization' },
+  },
+  summary: { executableInThisBuild: false, blocks: [], warnings: [], nextStep: '完成验收前自检。' },
+}
+
 const checklist = {
   mode: 'real-execution-checklist',
   readOnly: true,
@@ -160,8 +182,14 @@ const checklist = {
 }
 
 const capabilities = {
-  phase: '2J-acceptance-materials',
+  phase: '3-zhihu-draft-unverified',
   realActionsEnabled: false,
+  runtime: {
+    serviceVersion: '0.3.0-stage3-zhihu-draft',
+    protocol: { name: 'yizao-local-service', version: 2 },
+    acceptanceBuildId: 'stage3-zhihu-html-fidelity-v3.3',
+    requiredExtensionBuildId: 'stage3-zhihu-html-fidelity-v3.3',
+  },
   actions: {
     upload: '真实上传/保存草稿',
     publish: '公开发布',
@@ -174,10 +202,10 @@ const capabilities = {
     { id: 'eyzao.cn', name: '易造官网（eyzao.cn）', group: '官网', status: 'simulation-ready', currentActions: ['只读扫描', '发送快照预览', '模拟发布流程'], plannedActions: ['真实后台填写后等待用户最终提交'], evidence: ['模拟数据'], risks: ['真实执行未验收'] },
     { id: 'yzfanglei.com', name: '易造防雷官网（yzfanglei.com）', group: '官网', status: 'simulation-ready', currentActions: ['只读扫描', '发送快照预览', '模拟发布流程'], plannedActions: ['真实后台填写后等待用户最终提交'], evidence: ['模拟数据'], risks: ['真实执行未验收'] },
     { id: 'baijiahao', name: '百家号', group: '主流平台', status: 'simulation-ready', currentActions: ['只读扫描', '发送快照预览', '模拟发布流程'], plannedActions: ['复用原流程等待用户最终提交'], evidence: ['模拟数据'], risks: ['真实账号未验收'] },
-    { id: 'zhihu', name: '知乎', group: '主流平台', status: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['保存草稿'], evidence: ['用户反馈排版大体正常'], risks: ['草稿 URL 未回读'] },
+    { id: 'zhihu', name: '知乎', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
     { id: 'sohu', name: '搜狐号', group: '主流平台', status: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['保存草稿'], evidence: ['模拟数据'], risks: ['表格保真未验收'] },
     { id: 'toutiao', name: '头条号', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
-    { id: 'netease', name: '网易号', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
+    { id: 'netease', name: '网易号', aliases: ['网易', '网易号'], group: '主流平台', status: 'draft-simulation', workflow: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['小样本草稿验收'], evidence: ['仅本地模拟'], risks: ['不得显示草稿或发布成功'] },
     { id: 'xiaohongshu', name: '小红书', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
   ],
 }
@@ -194,6 +222,7 @@ const server = http.createServer(async (req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 
 let browser
+let healthMismatch = false
 try {
   browser = await chromium.launch({ channel: 'chrome', headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1500 } })
@@ -204,14 +233,17 @@ try {
     const read = () => JSON.parse(localStorage.getItem('__chrome_storage_mock__') || '{}')
     const write = (value) => localStorage.setItem('__chrome_storage_mock__', JSON.stringify(value))
     if (!read().yizao_service_token) write({ ...read(), yizao_service_token: 'a'.repeat(64) })
-    globalThis.chrome = { storage: { local: {
+    globalThis.chrome = { runtime: {
+      getManifest: () => ({ version: '2.0.9.6' }),
+      sendMessage: async (message) => message.type === 'CHECK_AUTH' ? { auth: { isAuthenticated: true } } : { error: 'mock only permits auth checks' },
+    }, storage: { local: {
       get: async (key) => typeof key === 'string' ? { [key]: read()[key] } : { ...read() },
       set: async (values) => write({ ...read(), ...values }),
     } } }
   })
   await page.route('http://127.0.0.1:8788/**', async (route) => {
     const req = route.request()
-    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, version: 'test-1b', protocol: { name: 'yizao-local-service', version: 2 } } })
+    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.3.0-stage3-zhihu-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 33, id: 'stage3-zhihu-html-fidelity-v3.3', extensionBuildId: 'stage3-zhihu-html-fidelity-v3.3' } } })
     const message = req.postDataJSON()
     if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' }, archive: { configured: true, resolved: 'C:\\模拟目录\\已归档' } }, excel: { configured: true, resolved: 'C:\\模拟目录\\计划表\\阶段1C模拟登记表.xlsx', sheetName: '9月执行计划' }, mappings: { platformValues: { 'eyzao.com': ['官网', 'eyzao.com', 'www.eyzao.com'], baijiahao: ['百家号', 'baijiahao'], zhihu: ['知乎', 'zhihu'], sohu: ['搜狐', '搜狐号', 'sohu'] } }, captionPolicy: { official: 'keep-existing-only', baijiahao: 'keep-existing-only', draft: 'use-existing-alt-after-preview' } } })
     if (message.command === 'scan') return route.fulfill({ json: { ok: true, packages } })
@@ -222,7 +254,7 @@ try {
     }
     if (message.command === 'prepareOfficialTask') return route.fulfill({ json: { ok: true, ...officialPreview } })
     if (message.command === 'previewExcelRegistration') return route.fulfill({ json: { ok: true, ...registrationPreview } })
-    if (message.command === 'preflightPackage') return route.fulfill({ json: { ok: true, ...preflight } })
+    if (message.command === 'preflightPackage') return route.fulfill({ json: { ok: true, ...(message.payload.platform === 'zhihu' ? zhihuPreflight : preflight) } })
     if (message.command === 'generateRealExecutionChecklist') return route.fulfill({ json: { ok: true, ...checklist } })
     if (message.command === 'getShareableConfigTemplate') return route.fulfill({ json: { ok: true, template: { schema: 'yizao-config-template', version: 2, createdAt: '2026-09-05T00:00:00.000Z', excel: { sheetName: '9月执行计划' }, mappings: { platformValues: { 'eyzao.com': ['官网', 'eyzao.com', 'www.eyzao.com'], baijiahao: ['百家号', 'baijiahao'] } }, captionPolicy: { official: 'keep-existing-only', baijiahao: 'keep-existing-only', draft: 'use-existing-alt-after-preview' }, notes: ['模拟模板不含个人路径'] }, excluded: ['roots.unpublished', 'roots.published', 'roots.archive', 'excel.planPath', 'security.trustedOrigin', 'token', 'tasks', 'logs'] } })
     if (message.command === 'importShareableConfigTemplate') return route.fulfill({ json: { ok: true, imported: true, notice: '已导入团队规则；个人目录、Excel 文件路径、配对令牌、任务历史均未从模板导入。' } })
@@ -285,6 +317,7 @@ try {
   }
 
   await page.goto(`http://127.0.0.1:${server.address().port}/src/workbench/index.html`)
+  await page.getByRole('button', { name: '配置', exact: true }).click()
   await page.getByRole('heading', { name: '配置向导（首次使用）' }).waitFor()
   await page.getByRole('button', { name: '生成可分享模板' }).click()
   await page.getByText('已生成团队配置模板').waitFor()
@@ -293,26 +326,42 @@ try {
   assert.equal(await page.locator('main').innerText().then((t) => t.includes('图片图注策略')), true, '配置向导需要展示图注策略')
   assert.equal(await page.locator('main').innerText().then((t) => t.includes('roots.unpublished')), true, '模板导出需要明确排除个人路径')
   await shot('workbench-2b-config-wizard.png')
+  await page.getByRole('button', { name: '文章库', exact: true }).click()
+  assert.equal(await page.getByRole('heading', { name: '配置向导（首次使用）' }).count(), 0, '配置向导与文章库必须是独立功能页')
 
   await page.getByRole('button', { name: '扫描未发布' }).click()
   await page.getByRole('button', { name: /易造新品发布通稿/ }).waitFor()
-  assert.equal(await page.locator('.source-group').count(), 4, '四个来源分组：官网/百家号/知乎/头条')
-  assert.equal(await page.locator('.pkg[data-cap="publish-preview"]').count(), 2, '官网与百家号 = 发布流程预览')
-  assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 1, '知乎 = 草稿流程预览')
+  assert.equal(await page.locator('.source-group').count(), 5, '五个来源分组：官网/百家号/知乎/头条/网易')
+  assert.equal(await page.locator('.pkg[data-cap="publish-preview"]').count(), 4, '三个官网与百家号 = 发布流程预览')
+  await page.getByLabel('平台筛选').selectOption({ label: '官方网站' })
+  assert.equal(await page.locator('.source-group').count(), 1, '三个官网应聚合为一个官方网站平台区块')
+  assert.equal(await page.locator('.pkg').count(), 3, '官方网站平台应包含三个站点的文章')
+  assert.equal(await page.locator('.site-tag').count(), 3, '每篇官网文章必须保留目标站点标识')
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 1, '知乎 = 受保护单篇草稿')
+  assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 1, '网易 = 草稿流程预览')
   assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 1, '头条 = 待适配')
   const notReady = page.locator('.pkg[data-cap="not-ready"]')
   assert.equal(await notReady.isDisabled(), true, '待适配卡片禁用')
   assert.equal((await notReady.locator('.pkg-action').innerText()).trim(), '待适配')
+  await page.getByLabel('平台筛选').selectOption({ label: '知乎' })
+  assert.equal(await page.locator('.pkg').count(), 1, '选择知乎后只显示知乎文章')
+  await page.getByLabel('搜索文章').fill('不存在的文章')
+  await page.getByText('没有找到符合条件的文章。').waitFor()
+  await page.getByRole('button', { name: '查看全部' }).click()
+  assert.equal(await page.locator('.pkg').count(), 7, '查看全部应清除组合筛选')
   await shot('workbench-1b-library.png')
 
   await page.getByRole('button', { name: '平台与账号' }).click()
   await page.getByText('真实动作未启用').waitFor()
-  assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 4, '三个官网站点与百家号可做模拟')
-  assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 3, '头条/网易/小红书仍待适配')
+  assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 2, '官方网站聚合卡与百家号可做模拟')
+  assert.equal(await page.locator('.cap-card').filter({ hasText: '3 个站点：eyzao.com、eyzao.cn、yzfanglei.com' }).count(), 1, '平台页应把三个官网显示为一个平台')
+  assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 2, '搜狐/网易可做草稿流程模拟')
+  assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 2, '头条/小红书仍待适配')
   await shot('workbench-1d-platform-capabilities.png')
 
   await page.getByRole('button', { name: '安全闸门' }).click()
-  await page.getByRole('heading', { name: '安全闸门 · 真实动作检查（阶段2J）' }).waitFor()
+  await page.getByRole('heading', { name: '安全闸门 · 真实动作检查（Stage 3）' }).waitFor()
   await page.getByRole('button', { name: '检查真实动作闸门（只读）' }).click()
   await page.locator('.gate-table tbody tr').first().waitFor()
   assert.equal(await page.locator('.gate-table tbody tr').count(), capabilities.platforms.length * Object.keys(capabilities.actions).length, '真实动作闸门需要逐平台逐动作检查')
@@ -323,11 +372,28 @@ try {
   // 知乎草稿模拟（扩展本地），先建一条，稍后用于任务中心合并展示。
   await page.getByRole('button', { name: '文章库' }).click()
   await page.getByRole('button', { name: /智能雷暴仪预警应用/ }).click()
-  await page.getByRole('button', { name: '创建模拟草稿任务（不调用平台接口）' }).waitFor()
+  await page.getByRole('button', { name: '检查准备状态（可选）' }).click()
+  await page.getByText('10/10 自检通过。点击保存时仍会重新检查。').waitFor()
+  assert.equal(await page.getByRole('button', { name: '一键保存到知乎草稿' }).isEnabled(), true, '主按钮无需用户预先执行检查或勾选确认')
+  assert.equal(await page.getByRole('checkbox').count(), 0, '当次确认改由保存前弹窗完成，不再要求单独勾选')
+  healthMismatch = true
+  await page.getByRole('button', { name: '检查准备状态（可选）' }).click()
+  await page.getByText(/服务版本不匹配/).first().waitFor()
+  assert.equal(await page.getByRole('button', { name: '一键保存到知乎草稿' }).isDisabled(), true, '服务/扩展版本不匹配时真实草稿按钮必须阻止')
+  healthMismatch = false
+  await page.getByRole('button', { name: '检查准备状态（可选）' }).click()
+  await page.getByText('10/10 自检通过。点击保存时仍会重新检查。').waitFor()
+  page.once('dialog', async (dialog) => {
+    assert.match(dialog.message(), /仅为当前文章.*保存一篇知乎草稿/, '一键保存仍须当次明确确认')
+    await dialog.dismiss()
+  })
+  await page.getByRole('button', { name: '一键保存到知乎草稿' }).click()
+  await page.getByText('已取消：未向知乎保存草稿。').waitFor()
+  await shot('workbench-3-zhihu-one-click.png')
   await page.getByRole('button', { name: '生成小样本验收材料（只读）' }).click()
   await page.getByRole('heading', { name: '真实执行验收材料（只读预览）' }).waitFor()
   assert.equal(await page.locator('.checklist-section').count(), 2, '知乎草稿预览也应提供只读验收单与小样本模板')
-  await page.getByRole('button', { name: '创建模拟草稿任务（不调用平台接口）' }).click()
+  await page.getByRole('button', { name: '仅运行模拟' }).click()
   await page.waitForSelector('.task-head strong:has-text("智能雷暴仪预警应用")', { timeout: 5000 })
 
   // 回文章库，打开官网包，走「发布流程预览」。

@@ -28,6 +28,9 @@ export interface SyncResult {
   postId?: string
   postUrl?: string
   draftOnly?: boolean  // 是否只保存了草稿
+  readBackVerified?: boolean // 保存后是否已从平台回读核对
+  fidelityVerified?: boolean // 回读内容是否通过必需的 HTML 保真规则
+  fidelityReport?: import('./article/canonical').FidelityReport
   error?: string
   message?: string  // 额外提示信息
   timestamp: number

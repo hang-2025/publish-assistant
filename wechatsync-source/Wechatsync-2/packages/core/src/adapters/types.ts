@@ -111,6 +111,10 @@ export interface PublishOptions {
   draftOnly?: boolean
   /** 图片上传进度回调 */
   onImageProgress?: ImageProgressCallback
+  /** 受保护草稿工作流的细粒度状态回调 */
+  onDraftStage?: (stage: 'running' | 'uploading' | 'filling' | 'saving_draft') => void | Promise<void>
+  /** 由易造本地服务 beginZhihuDraft 签发并绑定任务/快照的调用上下文。 */
+  draftAuthorization?: { action: 'saveDraft'; platform: 'zhihu'; taskId: string; snapshotId: string }
 }
 
 /**
@@ -131,6 +135,9 @@ export interface PlatformAdapter {
 
   /** 发布文章 */
   publish(article: Article, options?: PublishOptions): Promise<SyncResult>
+
+  /** 明确的保存草稿入口；实现该方法的平台仍必须让 publish() 拒绝公开发布。 */
+  saveDraft?(article: Article, options?: PublishOptions): Promise<SyncResult>
 
   /** 上传图片 (如果支持) */
   uploadImage?(file: Blob, filename?: string): Promise<string>

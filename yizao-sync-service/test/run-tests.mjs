@@ -20,6 +20,7 @@ import { PlatformRegistry, platformRegistry } from '../platforms/registry.mjs';
 import { getCapabilities, checkRealActionGate } from '../lib/capabilities.mjs';
 import { writeXlsx } from '../lib/xlsx.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
+import { parseAltFile } from '../lib/package.mjs';
 
 /**
  * 阶段1A 测试：全部在系统临时目录中构造夹具，不读取、不修改真实文章目录与真实 Excel。
@@ -38,6 +39,16 @@ const PLAN_XLSX = path.join(ROOT, '计划表.xlsx');
 const PLAN_TXT = path.join(ROOT, '计划表.txt');
 await fs.writeFile(PLAN_XLSX, '仅用于路径配置测试，不读取内容');
 await fs.writeFile(PLAN_TXT, '不是 xlsx');
+
+test('ALT 清单解析保留图片编号前缀和内容冒号', () => {
+  assert.deepEqual(parseAltFile([
+    '1.jpg：图片1：风电场智能防雷系统覆盖风机',
+    '2-image.png|图片2: 数据链路：采集至平台',
+  ].join('\n')), [
+    { number: 1, name: '1.jpg', alt: '图片1：风电场智能防雷系统覆盖风机' },
+    { number: 2, name: '2-image.png', alt: '图片2: 数据链路：采集至平台' },
+  ]);
+});
 
 // 生成内容各不相同的 1x1 像素 PNG（用于重复图片/内容指纹测试）
 function pngChunk(type, data) {
@@ -180,7 +191,7 @@ test('Task state machine：允许顺序推进和幂等更新，拒绝跳级、�
   const path = [
     TASK_STATUS.VALIDATING, TASK_STATUS.READY, TASK_STATUS.RUNNING,
     TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT,
-    TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
+    TASK_STATUS.DRAFT_SAVED, TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
   ];
   const states = [pending];
   for (const status of path) states.push(transitionTaskStatus(states.at(-1), status));
@@ -199,10 +210,14 @@ test('Task state machine：允许顺序推进和幂等更新，拒绝跳级、�
   assert.throws(() => createTask({ status: 'made_up' }), /状态无效/);
 });
 
-test('平台 Registry：模拟能力统一，真实草稿/发布方法保持关闭', async () => {
+test('平台 Registry：知乎仅开放受保护草稿实现，公开发布与未验收能力保持关闭', async () => {
   assert.equal(platformRegistry.get('www.eyzao.com').id, 'eyzao.com');
-  assert.equal(platformRegistry.get('知乎').workflow, 'draft-simulation');
+  assert.equal(platformRegistry.get('知乎').workflow, 'guarded-draft');
+  assert.equal(platformRegistry.get('知乎').capabilities.implementationAvailable, true);
   assert.equal(platformRegistry.get('toutiao').workflow, 'unsupported');
+  assert.equal(platformRegistry.get('网易').workflow, 'draft-simulation');
+  assert.equal(platformRegistry.get('netease').capabilities.simulate, true);
+  assert.equal((await platformRegistry.get('netease').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('eyzao.com').publish()).allowed, false);
   assert.equal(platformRegistry.list().length, 9);
@@ -323,6 +338,9 @@ test('health 无需令牌，返回版本', async () => {
   assert.equal(res.status, 200);
   const json = await res.json();
   assert.equal(json.name, 'yizao-sync-service');
+  assert.equal(json.protocol.version, 2);
+  assert.equal(json.build.packageVersion, 33);
+  assert.equal(json.build.id, 'stage3-zhihu-html-fidelity-v3.3');
 });
 
 test('命令接口：无 Origin / 网页 Origin / 错误 Host 一律拒绝', async () => {

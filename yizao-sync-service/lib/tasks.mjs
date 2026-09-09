@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import fss from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { TASK_STATUS, assertTaskStatusTransition } from '../domain/status.mjs';
 
 /**
  * 任务状态与幂等存储（阶段1B 本地 JSON 原型）。
@@ -44,7 +45,7 @@ export function initialState() {
 }
 
 /** 任务记录（不含正文、令牌、Cookie）。 */
-export function newTask({ taskKey, packageId, rootName, relativePath, platform, platformName, accountId, accountLabel, contentVersion, contentVersionShort, title, segments, snapshotId, mode = 'simulate' }) {
+export function newTask({ taskKey, packageId, rootName, relativePath, platform, platformName, accountId, accountLabel, contentVersion, contentVersionShort, title, segments, snapshotId, snapshot = null, mode = 'simulate' }) {
   const now = stageTime();
   return {
     schema: 2,
@@ -63,6 +64,8 @@ export function newTask({ taskKey, packageId, rootName, relativePath, platform, 
     title,
     segments,
     snapshotId,
+    snapshot,
+    status: TASK_STATUS.PENDING,
     runState: 'active', // active | terminal | stalled
     states: initialState(),
     history: [],
@@ -139,6 +142,26 @@ export class TaskStore {
     return task;
   }
 
+  /** Stage 3 canonical transition. Illegal jumps are rejected and persisted tasks are never auto-retried. */
+  async transitionStatus(taskId, nextStatus, detail = '', changes = {}) {
+    const task = await this.getTask(taskId);
+    if (!task) return null;
+    const current = task.status || TASK_STATUS.PENDING;
+    assertTaskStatusTransition(current, nextStatus);
+    const now = stageTime();
+    task.status = nextStatus;
+    task.states.draft = { stage: nextStatus, detail: String(detail || ''), updatedAt: now };
+    task.history.push({ at: now, stage: nextStatus, detail: String(detail || '') });
+    Object.assign(task, changes);
+    task.updatedAt = now;
+    if ([TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.FAILED, TASK_STATUS.CANCELLED].includes(nextStatus)) {
+      task.runState = 'terminal';
+      task.finishedAt = now;
+    }
+    await this.saveTask(task);
+    return task;
+  }
+
   /** 中间态任务全部标记为结果待核对；不自动重发、不复活。 */
   async recoverInterrupted() {
     const tasks = await this.listTasks();
@@ -146,6 +169,16 @@ export class TaskStore {
     for (const t of tasks) {
       if (this._isBusy(t) && t.states?.draft?.stage !== '结果待核对（重启中断）') {
         const now = stageTime();
+        if (t.mode === 'zhihu-draft') {
+          t.status = TASK_STATUS.FAILED;
+          t.states.draft = { stage: TASK_STATUS.FAILED, detail: '任务执行时服务或扩展中断，结果未知。不会自动重发；请先在知乎草稿箱人工核对。', updatedAt: now };
+          t.runState = 'stalled';
+          t.history.push({ at: now, stage: TASK_STATUS.FAILED, detail: '重启恢复：结果未知，未自动重发' });
+          t.updatedAt = now;
+          await this.saveTask(t);
+          changed += 1;
+          continue;
+        }
         t.states.draft = { stage: '结果待核对（重启中断）', detail: '任务正在执行时服务/扩展被中断，结果未确认。不会自动重发；请先人工核对，再决定清除或重新模拟。', updatedAt: now };
         t.runState = 'stalled';
         t.history.push({ at: now, stage: '结果待核对（重启中断）', detail: '重启恢复：自动标记，未自动重发' });

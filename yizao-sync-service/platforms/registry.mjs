@@ -3,10 +3,10 @@ import { officialAdapters } from './official/index.mjs';
 import { baijiahaoAdapter } from './baijiahao/index.mjs';
 import { zhihuAdapter } from './zhihu/index.mjs';
 import { sohuAdapter } from './sohu/index.mjs';
+import { neteaseAdapter } from './netease/index.mjs';
 
 const unsupported = [
   new PlatformAdapter({ id: 'toutiao', name: '头条号', workflow: 'unsupported', capabilities: UNSUPPORTED_CAPABILITIES }),
-  new PlatformAdapter({ id: 'netease', name: '网易号', workflow: 'unsupported', capabilities: UNSUPPORTED_CAPABILITIES }),
   new PlatformAdapter({ id: 'xiaohongshu', name: '小红书', workflow: 'unsupported', capabilities: UNSUPPORTED_CAPABILITIES }),
 ];
 
@@ -27,7 +27,7 @@ export class PlatformRegistry {
   list() { return [...this.#adapters.values()]; }
 }
 export const platformRegistry = new PlatformRegistry([
-  ...officialAdapters, baijiahaoAdapter, zhihuAdapter, sohuAdapter, ...unsupported,
+  ...officialAdapters, baijiahaoAdapter, zhihuAdapter, sohuAdapter, neteaseAdapter, ...unsupported,
 ]);
 
 export function platformArchitectureMetadata() {

@@ -10,6 +10,7 @@ import { buildSendSnapshot, makeTaskKey } from '../lib/snapshot.mjs';
 import { TaskStore } from '../lib/tasks.mjs';
 import { classifyTaskId, previewRegistration } from '../lib/excel-mapping.mjs';
 import { checkRealActionGate, getCapabilities, PLATFORM_CAPABILITIES } from '../lib/capabilities.mjs';
+import { ACCEPTANCE_BUILD, LOCAL_PROTOCOL, SERVICE_VERSION } from '../lib/build-info.mjs';
 import { archiveGateForSharedPackage } from '../lib/archive-sim.mjs';
 import {
   SITE_KEYS, validSiteKey, buildPublishPreview, startSimulatedPublish,
@@ -19,12 +20,13 @@ import { InMemoryArticleRepository } from '../repositories/article-repository.mj
 import { TaskRepository } from '../repositories/task-repository.mjs';
 import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
 import { ArticleService } from './article-service.mjs';
+import { ZhihuDraftService } from './zhihu-draft-service.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { createLocalApiServer } from '../routes/local-api.mjs';
 import { platformRegistry } from '../platforms/registry.mjs';
 
 /**
- * 易造发布助手 · 本地只读原型服务（阶段1A~2J：只读、模拟、登记预览、安全闸门、配置向导、归档门槛、验收材料）
+ * 易造发布助手 · 本地服务（阶段 3：仅新增受保护的知乎单篇保存草稿；其他真实动作继续关闭）
  *
  * 安全边界（对应审查要求二.1/2/3）：
  * - 只绑定 127.0.0.1；Host 必须是 127.0.0.1:PORT 或 localhost:PORT；
@@ -34,7 +36,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *   Authorization: Bearer <token>；令牌首次启动时生成，写入 data/token 文件并打印一次，
  *   由用户手工粘贴到插件工作台完成配对——任何匿名接口都不发放令牌，
  *   令牌不出现在 URL、查询参数和日志中；
- * - 命令走白名单（合计 20 条）：
+ * - 命令走白名单（合计 25 条）：
  *     · 阶段1A 4 条：getConfig / setConfig / scan / getPackage；
  *     · 阶段1B 5 条：prepareOfficialTask / simulateOfficialTask / getTasks / getTask / removeTask；
  *     · 阶段1C 1 条：previewExcelRegistration（只读登记匹配预览）；
@@ -46,6 +48,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *     · 阶段2E 1 条：confirmExcelRegisteredSimulated（人工确认 Excel 登记的模拟状态更新）；
  *     · 阶段2F 1 条：confirmArchivedSimulated（人工确认归档的模拟状态更新）；
  *     · 阶段2I 1 条：generateRealExecutionChecklist（真实执行验收单，只读生成）；
+ *     · 阶段3 5 条：prepare/begin/advance/complete/failZhihuDraft（仅知乎保存草稿）；
  *   payload 用严格 schema（assertAllowedKeys），不接受任意路径/URL/命令名；
  * - getPackage / 发送快照只接受扫描时签发的受控 packageId，不接受任何路径；
  *   服务端用 realpath（解析 junction/符号链接）复核包与每张图片仍位于授权根目录之内。
@@ -54,8 +57,8 @@ import { platformRegistry } from '../platforms/registry.mjs';
  * - prepareOfficialTask 只生成不可变发送快照 + 执行预览，不创建任务、不启动执行器；
  * - simulateOfficialTask 走模拟状态机，推进到「等待用户最终提交（模拟）」，绝不自动发布；
  * - Excel 只读映射原型可通过已配置的登记表路径做匹配预览，但不写入任何单元格；
- * - checkRealActionGate 当前永远返回 allowed=false，用于把真实动作显式拦在模拟版本之外；
- * - 真实发布、Excel 写入、文章归档、打开浏览器等命令一概不提供。
+ * - checkRealActionGate 默认返回 allowed=false；仅内部经过当次确认及快照复核的 zhihu.saveDraft 可放行；
+ * - 公开发布、Excel 写入、文章归档等命令一概不提供。
  *
  * 审查返工（2026-09-04）新增的两条硬约束：
  * - 【P0-1】发布包与目标平台必须服务端绑定：prepareOfficialTask / simulateOfficialTask
@@ -73,9 +76,9 @@ const TOKEN_PATH = path.join(DATA_DIR, 'token');
 const TASK_DIR = path.join(DATA_DIR, 'tasks');
 const LOCK_DIR = path.join(DATA_DIR, 'locks');
 const PORT = Number(process.env.YIZ_PORT || (process.argv.includes('--port') ? process.argv[process.argv.indexOf('--port') + 1] : 8788));
-const VERSION = '0.2.10-2j-acceptance-materials';
+const VERSION = SERVICE_VERSION;
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB：setConfig / 快照命令之外没有大载荷
-const PROTOCOL = { name: 'yizao-local-service', version: 2 };
+const PROTOCOL = LOCAL_PROTOCOL;
 const store = new TaskStore(TASK_DIR);
 const taskRepository = new TaskRepository(store);
 const articleRepository = new InMemoryArticleRepository();
@@ -458,6 +461,10 @@ function sanitizeTask(t) {
     contentVersion: t.contentVersion,
     contentVersionShort: t.contentVersionShort,
     snapshotId: t.snapshotId,
+    snapshot: t.snapshot || null,
+    status: t.status || '',
+    draftResult: t.draftResult || null,
+    fidelityFailure: t.fidelityFailure || null,
     runState: t.runState,
     draft: t.states?.draft || {},
     publish: t.states?.publish || {},
@@ -468,6 +475,53 @@ function sanitizeTask(t) {
     updatedAt: t.updatedAt,
     finishedAt: t.finishedAt || '',
   };
+}
+
+async function loadZhihuDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'zhihu') {
+    throw new Error(`发布包与知乎不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
+
+const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
+
+async function cmdPrepareZhihuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('zhihu').createTask({
+    createDraftTask: () => zhihuDraftService.prepare(payload || {}),
+  });
+  return { mode: 'zhihu-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginZhihuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('zhihu').saveDraft({
+    saveDraft: () => zhihuDraftService.begin(payload || {}),
+  });
+  return { mode: 'zhihu-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceZhihuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'zhihu-draft', task: sanitizeTask(await zhihuDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteZhihuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'zhihu-draft', task: sanitizeTask(await zhihuDraftService.complete(payload || {})) };
+}
+
+async function cmdFailZhihuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'zhihu-draft', task: sanitizeTask(await zhihuDraftService.fail(payload || {})) };
 }
 
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
@@ -708,16 +762,18 @@ async function cmdPreflightPackage(payload) {
   const warnings = [];
 
   let snapshotPreview = null;
-  if (siteKey) {
-    enforcePackageSiteBinding({ packageId: payload.packageId, relativePath, siteKey });
+  if (siteKey || requestedPlatform === 'zhihu') {
+    if (siteKey) enforcePackageSiteBinding({ packageId: payload.packageId, relativePath, siteKey });
     const snapshot = await buildSendSnapshot({
       info, readAsset,
       source: { packageId: payload.packageId, rootName, relativePath },
       requireAltPerImage: true,
     });
-    const preview = buildPublishPreview({ snapshot, siteKey });
+    const preview = siteKey
+      ? buildPublishPreview({ snapshot, siteKey })
+      : { platformName: '知乎', account: '当前 Chrome 知乎会话', finalAction: '保存草稿后等待用户检查' };
     snapshotPreview = {
-      siteKey,
+      siteKey: siteKey || requestedPlatform,
       platformName: preview.platformName,
       account: preview.account,
       finalAction: preview.finalAction,
@@ -1085,6 +1141,11 @@ const COMMANDS = {
   getShareableConfigTemplate: cmdGetShareableConfigTemplate,
   importShareableConfigTemplate: cmdImportShareableConfigTemplate,
   previewArchiveGate: cmdPreviewArchiveGate,
+  prepareZhihuDraft: cmdPrepareZhihuDraft,
+  beginZhihuDraft: cmdBeginZhihuDraft,
+  advanceZhihuDraft: cmdAdvanceZhihuDraft,
+  completeZhihuDraft: cmdCompleteZhihuDraft,
+  failZhihuDraft: cmdFailZhihuDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 
@@ -1112,6 +1173,7 @@ const server = createLocalApiServer({
   port: PORT,
   version: VERSION,
   protocol: PROTOCOL,
+  build: ACCEPTANCE_BUILD,
   maxBodyBytes: MAX_BODY_BYTES,
   commandRouter,
   getToken: () => STATE.token,
@@ -1133,7 +1195,7 @@ export async function startApplication() {
   const recovered = await store.recoverInterrupted();
   if (recovered) console.log(`重启恢复：${recovered} 个中断任务已标记「结果待核对（重启中断）」，未自动重发。`);
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`易造发布助手 · 本地只读原型服务 v${VERSION}`);
+    console.log(`易造发布助手 · 本地服务 v${VERSION}`);
     console.log(`监听：http://127.0.0.1:${PORT}（仅回环地址）`);
     if (created) {
       console.log('\n首次配对令牌（已写入 data/token，请复制粘贴到插件工作台，不要通过聊天/网络传输）：\n');
@@ -1143,10 +1205,10 @@ export async function startApplication() {
     } else {
       console.log('令牌已存在（如需查看：node server.mjs --print-token）');
     }
-    console.log('白名单命令（20 条）：1A = getConfig / setConfig / scan / getPackage；1B = prepareOfficialTask / simulateOfficialTask / getTasks / getTask / removeTask；1C = previewExcelRegistration；1D/2H = getCapabilities / checkRealActionGate；2A = preflightPackage；2I/2J = generateRealExecutionChecklist（只读验收单与小样本模板）；2B = getShareableConfigTemplate / importShareableConfigTemplate；2C = previewArchiveGate；2D = confirmPublishedSimulated；2E = confirmExcelRegisteredSimulated；2F = confirmArchivedSimulated（人工确认归档模拟）');
+    console.log('白名单命令（25 条）：原有 20 条只读/模拟命令；Stage 3 新增 prepare/begin/advance/complete/failZhihuDraft（仅知乎保存草稿）。');
     console.log('包↔平台绑定：prepare/simulate 只允许把包发往其受控目录推导出的站点，不匹配直接拒绝。');
-    console.log('阶段1D：官网/百家号仅执行预览 + 模拟状态机（终态「等待用户最终提交（模拟）」），真实动作闸门关闭；');
-    console.log('不提供真实发布/Excel 写入登记/归档命令，不启动旧执行器，不打开真实后台，不修改文章与 Excel。');
+    console.log('Stage 3：仅受保护的知乎单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
+    console.log('不提供公开发布/Excel 写入登记/真实归档命令，不启动旧执行器，不修改文章与 Excel。');
     console.log('站点锁作用域：仅在新服务遵循同一文件锁协议的进程之间互斥，不覆盖未接入本协议的旧执行器。');
   });
 }

@@ -3,7 +3,10 @@ import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { importDocument, resolveImage, sanitizeHtml, previewDocument, withoutDuplicateTitle } from '../src/local-import/importer'
 import { CodeAdapter } from '../../core/src/adapters/code-adapter'
+import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
+import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
+import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
 const requireCore = createRequire(resolve(process.cwd(), '../core/package.json'))
 const JSZip = requireCore('jszip')
 
@@ -15,6 +18,190 @@ function file(name: string, content: string | Uint8Array, path = name, type = ''
   return f
 }
 const png = () => file('中文 图.png', new Uint8Array([137,80,78,71]), '发布包/配图/中文 图.png', 'image/png')
+const draftAuthorization = { action: 'saveDraft' as const, platform: 'zhihu' as const, taskId: 'tsk_12345678_deadbeef', snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa' }
+
+function zhihuRuntime(fetchImpl: (url: string, options?: RequestInit) => Promise<Response>) {
+  return {
+    type: 'extension', fetch: fetchImpl,
+    cookies: { get: vi.fn(), set: vi.fn(), remove: vi.fn() },
+    storage: { get: vi.fn(), set: vi.fn(), remove: vi.fn() },
+    session: { get: vi.fn(), set: vi.fn() },
+    dom: { parseHTML: vi.fn(), querySelector: vi.fn(), querySelectorAll: vi.fn(), getTextContent: vi.fn(), getInnerHTML: vi.fn() },
+  } as any
+}
+
+describe('guarded Zhihu draft adapter', () => {
+  it('rejects public publish and reports unauthenticated sessions', async () => {
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async () => new Response('{}', { status: 401 })))
+    await expect(adapter.publish({ title: 'x', html: '<p>x</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    expect((await adapter.checkAuth()).isAuthenticated).toBe(false)
+  })
+
+  it('only succeeds after draft save readback matches', async () => {
+    const stages: string[] = []
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.endsWith('/api/articles/drafts') && options?.method === 'POST') return new Response(JSON.stringify({ id: '12345' }), { status: 200 })
+      if (url.endsWith('/12345/draft') && options?.method === 'PATCH') return new Response(null, { status: 204 })
+      if (url.endsWith('/12345/draft') && options?.method === 'GET') return new Response(JSON.stringify({ id: '12345', title: '测试', content: '<p>正文</p>' }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization, onDraftStage: (stage) => stages.push(stage) })
+    expect(result.success).toBe(true)
+    expect(result.draftOnly).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+    expect(result.fidelityVerified).toBe(true)
+    expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('does not report success when readback fails', async () => {
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.endsWith('/api/articles/drafts')) return new Response(JSON.stringify({ id: '9' }), { status: 200 })
+      if (options?.method === 'PATCH') return new Response(null, { status: 204 })
+      return new Response('{}', { status: 500 })
+    }))
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization })
+    expect(result.success).toBe(false)
+    expect(result.readBackVerified).not.toBe(true)
+  })
+
+  it('writes visible Caption from HTML img.alt and verifies it on readback', async () => {
+    let patchedContent = ''
+    const adapter = new ZhihuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.endsWith('/api/articles/drafts') && options?.method === 'POST') return new Response(JSON.stringify({ id: '24680' }), { status: 200 })
+      if (url.endsWith('/24680/draft') && options?.method === 'PATCH') {
+        patchedContent = JSON.parse(String(options.body)).content
+        return new Response(null, { status: 204 })
+      }
+      if (url.endsWith('/24680/draft') && options?.method === 'GET') return new Response(JSON.stringify({ id: '24680', title: '配图测试', content: patchedContent }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({ title: '配图测试', html: '<p>前文</p><img src="https://pic4.zhimg.com/test.png" alt="来自 HTML 的图注"><p>后文</p>', markdown: '' }, { draftOnly: true, draftAuthorization })
+    expect(patchedContent).toContain('<figure data-size="normal"><img src="https://pic4.zhimg.com/test.png" alt="来自 HTML 的图注" data-caption="来自 HTML 的图注" data-size="normal"></figure>')
+    expect(patchedContent).not.toContain('<figcaption>')
+    expect(result.fidelityVerified).toBe(true)
+    expect(result.fidelityReport?.checks.find((check) => check.key === 'caption-equals-html-alt')?.status).toBe('PASS')
+  })
+
+  it('rejects saveDraft without a task-bound local authorization', async () => {
+    const adapter = new ZhihuAdapter()
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    await adapter.init(zhihuRuntime(fetchMock))
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('任务/快照授权')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('Stage 3 acceptance safety', () => {
+  const compatibleHealth = {
+    ok: true,
+    name: 'yizao-sync-service',
+    version: '0.3.0-stage3-zhihu-draft',
+    protocol: { name: 'yizao-local-service', version: 2 },
+    build: { packageVersion: 33, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+  }
+
+  it('blocks mismatched service or extension builds', () => {
+    expect(serviceCompatibility(compatibleHealth).ok).toBe(true)
+    expect(serviceCompatibility({ ...compatibleHealth, version: 'old-service' }).ok).toBe(false)
+    expect(serviceCompatibility({ ...compatibleHealth, protocol: { name: 'yizao-local-service', version: 1 } }).ok).toBe(false)
+    expect(serviceCompatibility({ ...compatibleHealth, build: { ...compatibleHealth.build, id: 'old-extension' } }).ok).toBe(false)
+    expect(serviceCompatibility({ ...compatibleHealth, build: { ...compatibleHealth.build, packageVersion: 2 } }).ok).toBe(false)
+  })
+
+  it('requires every preflight acceptance check', () => {
+    const keys = ['service', 'token', 'origin', 'version', 'login', 'article', 'snapshot', 'html-fidelity-source', 'draft-gate', 'publish-gate']
+    expect(acceptanceChecksPassed(keys.map((key) => ({ key, ok: true })))).toBe(true)
+    expect(acceptanceChecksPassed(keys.map((key) => ({ key, ok: key !== 'token' })))).toBe(false)
+    expect(acceptanceChecksPassed(keys.filter((key) => key !== 'login').map((key) => ({ key, ok: true })))).toBe(false)
+  })
+
+  it('exports only the non-sensitive acceptance evidence allowlist', () => {
+    const evidence = buildAcceptanceEvidence({
+      timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
+      protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
+      extensionVersion: '2.0.9.6', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
+      taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
+      draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
+      fidelityVerified: true, fidelityOverall: 'DEGRADED', fidelitySummary: { pass: 11, degraded: 1, unsupported: 0, fail: 0 },
+      saveDraftDeniedBeforeConfirmation: true, publishDenied: true,
+    })
+    const json = JSON.stringify(evidence).toLowerCase()
+    const keys: string[] = []
+    const collectKeys = (value: unknown) => {
+      if (!value || typeof value !== 'object') return
+      for (const [key, nested] of Object.entries(value)) { keys.push(key.toLowerCase()); collectKeys(nested) }
+    }
+    collectKeys(evidence)
+    expect(evidence.platform).toBe('zhihu')
+    expect(evidence.safetyGates.publicPublishEnabled).toBe(false)
+    for (const forbidden of ['title', 'body', 'content', 'cookie', 'token', 'authorization', 'account', 'profile', 'excelpath', 'filepath', 'absolutepath']) expect(keys).not.toContain(forbidden)
+    for (const forbiddenValue of ['bearer ', 'c:\\users\\', 'chrome profile']) expect(json).not.toContain(forbiddenValue)
+  })
+})
+
+describe('canonical publishing HTML fidelity', () => {
+  const sourceHtml = '<h1>主标题</h1><p>第一段 <strong>加粗</strong> <a href="https://example.com">链接</a></p><figure><img src="data:image/png;base64,AAAA" alt="现场图一"><figcaption>旧图注</figcaption></figure><h2>小节</h2><ul><li>甲</li><li>乙</li></ul><blockquote>引用</blockquote><table><tbody><tr><td>A</td><td>B</td></tr></tbody></table><img src="data:image/png;base64,BBBB" alt="现场图二"><p>末段</p>'
+
+  it('parses semantic blocks plus image order and anchors from canonical HTML', () => {
+    const article = parseCanonicalArticle(sourceHtml, '测试标题')
+    expect(article.blocks.map((block) => block.kind)).toEqual(['heading', 'paragraph', 'image', 'heading', 'list', 'quote', 'table', 'image', 'paragraph'])
+    expect(article.images.map((image) => [image.order, image.anchor, image.alt, image.captionCandidate])).toEqual([
+      [1, 2, '现场图一', '现场图一'], [2, 6, '现场图二', '现场图二'],
+    ])
+    const rendered = renderCanonicalArticle(article)
+    expect(rendered).toContain('<figcaption>现场图一</figcaption>')
+    expect(rendered).not.toContain('旧图注')
+  })
+
+  it('accepts 140 Unicode characters and blocks 141 without silently truncating', () => {
+    expect(ZHIHU_CAPTION_POLICY_MAX_LENGTH).toBe(140)
+    const atLimitAlt = '图'.repeat(140)
+    const overLimitAlt = '图'.repeat(141)
+    expect(() => assertCaptionPolicy(parseCanonicalArticle(`<img src="x" alt="${atLimitAlt}">`, '标题'))).not.toThrow()
+    expect(() => assertCaptionPolicy(parseCanonicalArticle(`<img src="x" alt="${overLimitAlt}">`, '标题'))).toThrow('不会静默截断')
+  })
+
+  it('blocks image nesting whose anchor cannot be represented safely', () => {
+    expect(() => assertCaptionPolicy(parseCanonicalArticle('<p>前文<span><img src="x" alt="嵌套图"></span>后文</p>', '标题'))).toThrow('不能安全保持锚点')
+  })
+
+  it('reports PASS, DEGRADED and FAIL with required-policy semantics', () => {
+    const source = parseCanonicalArticle(sourceHtml, '测试标题')
+    const rendered = renderCanonicalArticle(source)
+    expect(validateCanonicalFidelity(source, rendered, '测试标题').overall).toBe('PASS')
+
+    const emphasisFailure = validateCanonicalFidelity(source, rendered.replace('<strong>加粗</strong>', '加粗'), '测试标题')
+    expect(emphasisFailure.fidelityVerified).toBe(false)
+
+    for (const changed of [
+      rendered.replace('<ul>', '<p>').replace('</ul>', '</p>'),
+      rendered.replace('href="https://example.com"', 'href="https://example.net"'),
+      rendered.replace(/<table[\s\S]*?<\/table>/, '<p>AB</p>'),
+    ]) {
+      const degraded = validateCanonicalFidelity(source, changed, '测试标题')
+      expect(degraded.overall).toBe('DEGRADED')
+      expect(degraded.fidelityVerified).toBe(true)
+    }
+
+    for (const changed of [
+      rendered.replace(/<figure>[\s\S]*?<\/figure>/, ''),
+      rendered.replace(/(<figure>[\s\S]*?<\/figure>)/, '$1$1'),
+      rendered.replace('<figcaption>现场图一</figcaption>', '<figcaption>错误图注</figcaption>'),
+      rendered.replace(/(<figure>[\s\S]*?<\/figure>)([\s\S]*)(<figure>[\s\S]*?<\/figure>)/, '$3$2$1'),
+    ]) {
+      const report = validateCanonicalFidelity(source, changed, '测试标题')
+      expect(report.overall).toBe('FAIL')
+      expect(report.fidelityVerified).toBe(false)
+    }
+  })
+})
 
 describe('local article import', () => {
   it('loads UTF-8 Markdown and a Chinese percent-encoded relative image, retaining ALT', async () => {

@@ -1,6 +1,6 @@
-# 易造发布助手 · 本地只读原型服务（阶段 1A ~ 2J）
+# 易造发布助手 · 本地服务（Stage 3 知乎单篇草稿）
 
-仅限原型验证：只提供目录配置、只读扫描、发布包读取、官网/百家号模拟任务、Excel 登记匹配只读预览、平台能力矩阵、真实动作闸门、发布前总预演和验收材料生成。**没有**真实发布、上传、Excel 写入登记、文件移动/删除命令，不会修改任何文章文件或真实 Excel。
+保留阶段 1A~2J 的只读/模拟能力，并新增受保护的知乎单篇保存草稿协调。发布包 HTML 先经扩展的 Canonical Article 层解析，平台回读后只有必需的 Fidelity Report 检查全部 PASS，服务才接受 `draft_saved`。公开发布、独立真实上传、Excel 写入、文件移动/删除与真实归档仍没有命令；服务不会保存 Chrome Cookie/Profile，也不会修改文章或 Excel。
 
 ## 运行步骤
 
@@ -37,7 +37,7 @@ node server.mjs
 | `getTasks` / `getTask` / `removeTask` | 查看/读取/清理纯模拟任务记录 |
 | `previewExcelRegistration` | 按已配置 Excel 路径做登记匹配只读预览；只读工作簿，不写单元格、不登记、不归档 |
 | `getCapabilities` | 返回平台能力矩阵：可模拟、草稿模拟、待适配、风险与验收状态 |
-| `checkRealActionGate` | 查询真实动作闸门；当前真实上传/公开发布/Excel 写入/归档移动均返回不允许 |
+| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅内部满足 Stage 3 当次确认与快照复核的 `zhihu.saveDraft` 可放行 |
 | `preflightPackage` | 发布前总预演：汇总发送快照、Excel 匹配、归档目标和真实动作闸门；只读不执行 |
 | `generateRealExecutionChecklist` | 生成真实执行验收单和单篇小样本验收模板；只读返回 Markdown，不创建任务、不写文件、不上传、不发布、不登记、不归档 |
 | `getShareableConfigTemplate` / `importShareableConfigTemplate` | 导出/导入不含个人路径、令牌和扩展 ID 的团队规则 |
@@ -45,6 +45,11 @@ node server.mjs
 | `confirmPublishedSimulated` | 只更新任务的模拟人工发布确认状态 |
 | `confirmExcelRegisteredSimulated` | 只更新任务的模拟登记确认状态，不写 Excel |
 | `confirmArchivedSimulated` | 只更新任务的模拟归档确认状态，不移动、复制或删除文件 |
+| `prepareZhihuDraft` | 校验知乎包、生成不可变快照并幂等创建任务；需要当次用户确认 |
+| `beginZhihuDraft` | 重新读取源包核对快照后，仅授权该任务的 `zhihu.saveDraft` |
+| `advanceZhihuDraft` | 按状态机记录上传、填写、保存进度，拒绝跳级 |
+| `completeZhihuDraft` | 只在扩展报告保存成功且平台回读已验证后记录 `draft_saved` |
+| `failZhihuDraft` | 持久记录失败；重启后不会自动重发 |
 
 任何其他命令（包括 publish/archive 等）都会被白名单拒绝。
 
@@ -66,7 +71,7 @@ node server.mjs
 - 令牌校验使用时间安全比较；
 - `getPackage` 只接受 `scan` 签发的包 ID（服务内存态，重启失效需重新扫描），不接受路径；
 - `previewExcelRegistration` / `preflightPackage` 同样只接受受控包 ID，并且只读取 `setConfig` 已保存的 `.xlsx` 文件；不接受任意 Excel 路径参数；
-- `checkRealActionGate` 当前始终返回 `allowed=false`，用于防止模拟版本误触发真实上传、发布、写表或归档；
+- `checkRealActionGate` 默认返回 `allowed=false`；唯一例外是服务内部复核过的 `zhihu.saveDraft` 当次授权；
 - 所有文件访问经过 `resolveInside`：`fs.realpath` 解析 Windows junction/符号链接后复核仍位于授权根目录内；扫描不深入符号链接目录；
 - 请求体按 UTF-8 实际字节限制为 1MB。
 
@@ -76,7 +81,7 @@ node server.mjs
 npm test
 ```
 
-1A~2J 测试全部使用系统临时目录夹具，覆盖：中文路径与空格、缺图、乱序、同名文件、重复图片（内容指纹）、空 ALT、已有图注与 ALT 冲突、junction 越界、`..` 越界、Host/Origin/令牌/扩展 ID 绑定/白名单/UTF-8 请求大小校验、服务重启后旧包 ID 失效、跨进程互斥锁、Excel 只读匹配预览、平台能力矩阵、真实动作闸门、发布前总预演、官网/百家号/知乎小样本验收模板和错误包平台绑定拒绝。
+测试全部使用临时夹具或模拟 HTTP 响应，除既有覆盖外还验证：知乎未登录、公开发布拒绝、重复任务、快照变化、图片/保存/回读失败、HTML Caption/保真失败不得进入 `draft_saved`、非法状态转换和重启不自动重试。自动测试不会访问真实知乎账号。
 
 ## 本阶段未实现（已知风险）
 
@@ -84,4 +89,4 @@ npm test
 - 未实现 Excel 写入登记与真实归档（旧 `archive.mjs` 的破坏性操作未复制启用）；
 - 未做图片分块传输（当前 getPackage 整包返回，大图场景待后续阶段）；
 - 当前采用“首次持令牌配对时绑定扩展 ID”；正式分发时仍需确定固定扩展 ID、令牌轮换和解除配对的安装流程。
-- 验收材料不是执行授权；官网/百家号真实流程仍必须停在用户最终提交之前，知乎/搜狐真实草稿也尚未验收。
+- 知乎真实草稿实现尚未用专用测试账号人工验收，所以能力表仍保持 `verified=false`、`saveDraft=false`；搜狐真实草稿尚未实现。

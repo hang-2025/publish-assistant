@@ -12,6 +12,7 @@ export * from './ai'
 
 // Lib (HTML 处理等工具)
 export * from './lib'
+export * from './article/canonical'
 
 // Version
 export const VERSION = '2.0.0'
