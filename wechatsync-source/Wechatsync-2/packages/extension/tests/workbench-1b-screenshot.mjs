@@ -335,6 +335,12 @@ try {
   const notReady = page.locator('.pkg[data-cap="not-ready"]')
   assert.equal(await notReady.isDisabled(), true, '待适配卡片禁用')
   assert.equal((await notReady.locator('.pkg-action').innerText()).trim(), '待适配')
+  await page.getByLabel('平台筛选').selectOption({ label: '知乎' })
+  assert.equal(await page.locator('.pkg').count(), 1, '选择知乎后只显示知乎文章')
+  await page.getByLabel('搜索文章').fill('不存在的文章')
+  await page.getByText('没有找到符合条件的文章。').waitFor()
+  await page.getByRole('button', { name: '查看全部' }).click()
+  assert.equal(await page.locator('.pkg').count(), 4, '查看全部应清除组合筛选')
   await shot('workbench-1b-library.png')
 
   await page.getByRole('button', { name: '平台与账号' }).click()

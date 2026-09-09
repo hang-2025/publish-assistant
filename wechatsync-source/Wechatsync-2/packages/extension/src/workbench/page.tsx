@@ -513,6 +513,8 @@ export function Workbench() {
   const [publishLinks, setPublishLinks] = useState<Record<string, string>>({})
   const [scans, setScans] = useState<Record<string, PkgSummary[]>>({})
   const [scanning, setScanning] = useState('')
+  const [libraryPlatform, setLibraryPlatform] = useState('all')
+  const [librarySearch, setLibrarySearch] = useState('')
   const [detail, setDetail] = useState<PkgDetail | null>(null)
   const [detailError, setDetailError] = useState('')
   const [openCap, setOpenCap] = useState<Capability | null>(null)
@@ -543,6 +545,21 @@ export function Workbench() {
   const compatibility = serviceCompatibility(serviceInfo)
   const acceptanceReady = acceptanceChecksPassed(acceptanceChecks)
   const extensionVersion = chrome.runtime?.getManifest?.().version || 'development-test'
+  const platformCatalog = capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES
+  const libraryPlatformOptions = useMemo(() => {
+    const groups = groupPackages(Object.values(scans).flat(), platformCatalog)
+    return groups.map(({ key, name }) => ({ key, name }))
+  }, [scans, platformCatalog])
+  const filterLibraryPackages = (packages: PkgSummary[]) => {
+    const query = librarySearch.trim().toLocaleLowerCase('zh-CN')
+    return packages.filter((pkg) => {
+      const [kind = '未分类', source = '未分类'] = pkg.segments
+      if (libraryPlatform !== 'all' && `${kind}/${source}` !== libraryPlatform) return false
+      if (!query) return true
+      return [pkg.title, pkg.relativePath, ...pkg.segments]
+        .some((value) => value.toLocaleLowerCase('zh-CN').includes(query))
+    })
+  }
 
   async function probeService() {
     setServiceState('checking')
@@ -1200,9 +1217,23 @@ export function Workbench() {
           {roots.published && <button disabled={!!scanning} onClick={() => scan('published')}>{scanning === 'published' ? '扫描中…' : '扫描已发布'}</button>}
           <span className="hint">只读扫描：识别结果原样展示，不修改任何文件。能力标签：<em className="tag">只读</em> 仅查看不改写；<em className="tag">模拟</em> 不调用真实平台；<em className="tag">待适配</em> 未接入；<em className="tag">需要另行授权</em> 真实发布/投稿需授权。</span>
         </div>
+        {Object.values(scans).some((items) => items.length) && <div className="library-tools">
+          <label>
+            <span>平台筛选</span>
+            <select aria-label="平台筛选" value={libraryPlatform} onChange={(event) => setLibraryPlatform(event.target.value)}>
+              <option value="all">全部平台</option>
+              {libraryPlatformOptions.map((platform) => <option key={platform.key} value={platform.key}>{platform.name}</option>)}
+            </select>
+          </label>
+          <label className="library-search">
+            <span>搜索文章</span>
+            <input type="search" aria-label="搜索文章" value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder="搜索标题、产品分类、日期或平台" />
+          </label>
+          {(libraryPlatform !== 'all' || librarySearch) && <button type="button" className="secondary" onClick={() => { setLibraryPlatform('all'); setLibrarySearch('') }}>清除筛选</button>}
+        </div>}
         {(['unpublished', 'published'] as const).filter((r) => scans[r]?.length).map((root) => <div key={root} className="library-state">
           <h3 className="state-title">{root === 'unpublished' ? '未发布' : '已发布（历史待核对）'}</h3>
-          {groupPackages(scans[root]!, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES).map((source) => <section className="source-group" key={source.key}>
+          {groupPackages(filterLibraryPackages(scans[root]!), platformCatalog).map((source) => <section className="source-group" key={source.key}>
             <div className="source-head">
               <strong>{source.name}</strong>
               <span className="source-badge">{source.badge}</span>
@@ -1227,6 +1258,7 @@ export function Workbench() {
               })}</div>
             </div>)}
           </section>)}
+          {!filterLibraryPackages(scans[root]!).length && <div className="library-empty-filter">没有找到符合条件的文章。<button type="button" className="secondary" onClick={() => { setLibraryPlatform('all'); setLibrarySearch('') }}>查看全部</button></div>}
           {scans[root]!.filter((p) => !p.packageId).map((notice, index) => <p className="hint" key={`${notice.relativePath}/${index}`}>⚠ {notice.title}</p>)}
         </div>)}
         {scans.unpublished && !scans.unpublished.length && <p className="hint">未发布目录中没有识别到发布包（需要 01-SEO元数据.json / 01-SEO信息.txt / 02-后台一键复制正文.html 或 .docx 标记）。</p>}
