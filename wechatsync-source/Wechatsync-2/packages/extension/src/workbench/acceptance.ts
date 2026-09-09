@@ -1,6 +1,6 @@
-export const EXTENSION_BUILD_ID = 'stage3-zhihu-html-fidelity-v3.1'
-export const ACCEPTANCE_PACKAGE_VERSION = 31
-export const ACCEPTANCE_PACKAGE_LABEL = '3.1'
+export const EXTENSION_BUILD_ID = 'stage3-zhihu-html-fidelity-v3.2'
+export const ACCEPTANCE_PACKAGE_VERSION = 32
+export const ACCEPTANCE_PACKAGE_LABEL = '3.2'
 export const EXPECTED_SERVICE_VERSION = '0.3.0-stage3-zhihu-draft'
 export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
 
