@@ -215,6 +215,9 @@ test('平台 Registry：知乎仅开放受保护草稿实现，公开发布与�
   assert.equal(platformRegistry.get('知乎').workflow, 'guarded-draft');
   assert.equal(platformRegistry.get('知乎').capabilities.implementationAvailable, true);
   assert.equal(platformRegistry.get('toutiao').workflow, 'unsupported');
+  assert.equal(platformRegistry.get('网易').workflow, 'draft-simulation');
+  assert.equal(platformRegistry.get('netease').capabilities.simulate, true);
+  assert.equal((await platformRegistry.get('netease').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('eyzao.com').publish()).allowed, false);
   assert.equal(platformRegistry.list().length, 9);

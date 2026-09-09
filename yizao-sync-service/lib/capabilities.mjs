@@ -121,9 +121,26 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     evidence: ['公开源码存在适配器；用户反馈搜狐表格存在问题'],
     risks: ['表格保真、转条目、转图片方案均未验收'],
   },
-  ...['toutiao', 'netease', 'xiaohongshu'].map((id) => ({
+  {
+    id: 'netease',
+    name: '网易号',
+    group: '主流平台',
+    status: 'draft-simulation',
+    currentActions: ['只读扫描', '扩展本地草稿流程模拟'],
+    plannedActions: ['调研网易号编辑器', '用非敏感小样本验收保存草稿'],
+    realActionPolicy: {
+      upload: 'not-supported',
+      saveDraft: 'not-supported',
+      publish: 'not-supported',
+      excelWrite: 'requires-explicit-authorization',
+      archiveMove: 'requires-explicit-authorization',
+    },
+    evidence: ['通用 Platform Adapter 与扩展本地模拟任务已接入；不包含平台网络实现'],
+    risks: ['网易号登录、编辑器结构、图片与正文保真均未做真实账号验收'],
+  },
+  ...['toutiao', 'xiaohongshu'].map((id) => ({
     id,
-    name: ({ toutiao: '头条号', netease: '网易号', xiaohongshu: '小红书' })[id],
+    name: ({ toutiao: '头条号', xiaohongshu: '小红书' })[id],
     group: '待适配平台',
     status: 'not-adapted',
     currentActions: ['只读扫描'],

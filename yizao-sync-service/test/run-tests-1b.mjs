@@ -912,6 +912,8 @@ test('1D 能力矩阵与真实动作闸门：默认拒绝，只有显式 Stage 3
   assert.equal(caps.realActionsEnabled, false);
   assert.ok(caps.platforms.some((p) => p.id === 'eyzao.com' && p.status === 'simulation-ready'));
   assert.ok(caps.platforms.some((p) => p.id === 'toutiao' && p.status === 'not-adapted'));
+  assert.ok(caps.platforms.some((p) => p.id === 'netease' && p.status === 'draft-simulation' && p.workflow === 'draft-simulation'));
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'netease' }).allowed, false);
   for (const action of ['upload', 'publish', 'excelWrite', 'archiveMove']) {
     const gate = checkRealActionGate({ action, platform: 'eyzao.com' });
     assert.equal(gate.allowed, false, `${action} 当前必须关闭`);

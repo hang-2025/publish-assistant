@@ -23,6 +23,7 @@ const packages = [
   { packageId: 'pkg-baijiahao', relativePath: '主流平台/百家号/易造科技/2026-09-02/百家号包', segments: ['主流平台', '百家号', '易造科技', '2026-09-02', '百家号包'], title: '百家号图文（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-zhihu', relativePath: '主流平台/zhihu/智能雷暴仪/2026-09-02/知乎包', segments: ['主流平台', 'zhihu', '智能雷暴仪', '2026-09-02', '知乎包'], title: '智能雷暴仪预警应用', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-toutiao', relativePath: '主流平台/toutiao/智能雷暴仪/2026-09-03/头条包', segments: ['主流平台', 'toutiao', '智能雷暴仪', '2026-09-03', '头条包'], title: '雷电预警头条版（待适配）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['待适配平台，仅只读展示'] },
+  { packageId: 'pkg-netease', relativePath: '主流平台/网易号/智能雷暴仪/2026-09-04/网易包', segments: ['主流平台', '网易号', '智能雷暴仪', '2026-09-04', '网易包'], title: '雷电预警网易版（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['网易草稿流程仅本地模拟'] },
 ]
 
 function packageDetail(pkg) {
@@ -202,7 +203,7 @@ const capabilities = {
     { id: 'zhihu', name: '知乎', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
     { id: 'sohu', name: '搜狐号', group: '主流平台', status: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['保存草稿'], evidence: ['模拟数据'], risks: ['表格保真未验收'] },
     { id: 'toutiao', name: '头条号', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
-    { id: 'netease', name: '网易号', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
+    { id: 'netease', name: '网易号', aliases: ['网易', '网易号'], group: '主流平台', status: 'draft-simulation', workflow: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['小样本草稿验收'], evidence: ['仅本地模拟'], risks: ['不得显示草稿或发布成功'] },
     { id: 'xiaohongshu', name: '小红书', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
   ],
 }
@@ -328,9 +329,10 @@ try {
 
   await page.getByRole('button', { name: '扫描未发布' }).click()
   await page.getByRole('button', { name: /易造新品发布通稿/ }).waitFor()
-  assert.equal(await page.locator('.source-group').count(), 4, '四个来源分组：官网/百家号/知乎/头条')
+  assert.equal(await page.locator('.source-group').count(), 5, '五个来源分组：官网/百家号/知乎/头条/网易')
   assert.equal(await page.locator('.pkg[data-cap="publish-preview"]').count(), 2, '官网与百家号 = 发布流程预览')
   assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 1, '知乎 = 受保护单篇草稿')
+  assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 1, '网易 = 草稿流程预览')
   assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 1, '头条 = 待适配')
   const notReady = page.locator('.pkg[data-cap="not-ready"]')
   assert.equal(await notReady.isDisabled(), true, '待适配卡片禁用')
@@ -340,13 +342,14 @@ try {
   await page.getByLabel('搜索文章').fill('不存在的文章')
   await page.getByText('没有找到符合条件的文章。').waitFor()
   await page.getByRole('button', { name: '查看全部' }).click()
-  assert.equal(await page.locator('.pkg').count(), 4, '查看全部应清除组合筛选')
+  assert.equal(await page.locator('.pkg').count(), 5, '查看全部应清除组合筛选')
   await shot('workbench-1b-library.png')
 
   await page.getByRole('button', { name: '平台与账号' }).click()
   await page.getByText('真实动作未启用').waitFor()
   assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 4, '三个官网站点与百家号可做模拟')
-  assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 3, '头条/网易/小红书仍待适配')
+  assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 2, '搜狐/网易可做草稿流程模拟')
+  assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 2, '头条/小红书仍待适配')
   await shot('workbench-1d-platform-capabilities.png')
 
   await page.getByRole('button', { name: '安全闸门' }).click()

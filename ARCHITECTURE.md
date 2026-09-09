@@ -62,8 +62,8 @@ saveDraft / publish / getStatus
 - `platforms/official`：eyzao.com、eyzao.cn、yzfanglei.com 的发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
 - `platforms/zhihu`：受保护单篇草稿协调，未完成人工验收前 `verified/saveDraft` 仍为 false。
-- `platforms/sohu`：扩展本地草稿流程模拟的能力声明。
-- 头条、网易、小红书：`unsupported`，不得伪造草稿或发布成功。
+- `platforms/sohu`、`platforms/netease`：扩展本地草稿流程模拟的能力声明，不包含平台网络实现。
+- 头条、小红书：`unsupported`，不得伪造草稿或发布成功。
 
 新增平台时应依次修改：
 

@@ -10,8 +10,8 @@ import { confirmArchivedSimulated as confirmLocalArchivedSimulated, confirmExcel
  * - 只读扫描本地文章目录、安全预览正文、图片与 ALT/图注对照；
  * - 官网/百家号：经本地服务生成「执行预览与发送快照」，可运行「模拟发布流程」，
  *   终态停在「等待用户最终提交（模拟）」，绝不自动点击最终发布；
- * - 知乎：可在用户当次确认与服务端快照复核后保存一篇草稿；搜狐仍仅模拟；
- * - 头条/网易/小红书等：标注「待适配」，不提供执行入口；
+ * - 知乎：可在用户当次确认与服务端快照复核后保存一篇草稿；搜狐、网易仍仅模拟；
+ * - 头条/小红书等：标注「待适配」，不提供执行入口；
  * - 不公开发布、不修改 Excel、不移动文件；知乎草稿以外的真实上传全部关闭。
  */
 
@@ -53,7 +53,7 @@ interface Capability {
   label: string
   /** 能力标签 chips */
   tags: string[]
-  /** 知乎/搜狐草稿模拟用的平台 */
+  /** 知乎/搜狐/网易草稿模拟用的平台 */
   platform?: { id: string; name: string }
   /** 官网/百家号：服务端命令使用的站点键 */
   siteKey?: string
@@ -299,13 +299,13 @@ const FALLBACK_PLATFORM_CAPABILITIES: CapabilityPlatform[] = [
     status: 'simulation-ready', workflow: 'official-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
   })),
   ...[
-    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']],
+    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']], ['netease', '网易号', ['网易', '网易号']],
   ].map(([id, name, aliases]) => ({
     id: id as string, name: name as string, aliases: aliases as string[], group: '主流平台',
     status: 'draft-simulation', workflow: 'draft-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
   })),
   ...[
-    ['toutiao', '头条号'], ['netease', '网易号'], ['xiaohongshu', '小红书'],
+    ['toutiao', '头条号'], ['xiaohongshu', '小红书'],
   ].map(([id, name]) => ({
     id, name, aliases: [], group: '待适配平台', status: 'not-adapted', workflow: 'unsupported',
     currentActions: [], plannedActions: [], evidence: [], risks: [],
@@ -582,7 +582,7 @@ export function Workbench() {
     })
   }, [])
 
-  // 模拟任务推进的轮询刷新（扩展本地知乎/搜狐草稿模拟）
+  // 模拟任务推进的轮询刷新（扩展本地知乎/搜狐/网易草稿模拟）
   useEffect(() => {
     pollRef.current = window.setInterval(() => { refreshTasks().then(setTasks) }, 800)
     restoreTasks().then(setTasks)
@@ -851,7 +851,7 @@ export function Workbench() {
     window.setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
-  // 知乎/搜狐：草稿流程模拟（扩展本地，不调用平台）。
+  // 知乎/搜狐/网易：草稿流程模拟（扩展本地，不调用平台）。
   async function runDraftSimulation() {
     if (!detail || !openCap?.platform) return
     await createSimulatedTask({
@@ -1318,7 +1318,7 @@ export function Workbench() {
           </div>
         </details>
 
-        {/* 能力入口：发布流程预览（官网/百家号，服务端）| 草稿流程预览（知乎/搜狐，扩展本地）| 待适配（禁用） */}
+        {/* 能力入口：发布流程预览（官网/百家号，服务端）| 草稿流程预览（知乎/搜狐/网易，扩展本地）| 待适配（禁用） */}
         <div className="flow-card">
           {openCap?.kind === 'publish-preview' && <>
             <h3>发布流程预览（{openCap.siteName} · 阶段2J 仅模拟）</h3>
