@@ -80,7 +80,8 @@ describe('guarded Zhihu draft adapter', () => {
       return new Response('{}', { status: 404 })
     }))
     const result = await adapter.saveDraft({ title: '配图测试', html: '<p>前文</p><img src="https://pic4.zhimg.com/test.png" alt="来自 HTML 的图注"><p>后文</p>', markdown: '' }, { draftOnly: true, draftAuthorization })
-    expect(patchedContent).toContain('<figcaption>来自 HTML 的图注</figcaption>')
+    expect(patchedContent).toContain('<figure data-size="normal"><img src="https://pic4.zhimg.com/test.png" alt="来自 HTML 的图注" data-caption="来自 HTML 的图注" data-size="normal"></figure>')
+    expect(patchedContent).not.toContain('<figcaption>')
     expect(result.fidelityVerified).toBe(true)
     expect(result.fidelityReport?.checks.find((check) => check.key === 'caption-equals-html-alt')?.status).toBe('PASS')
   })
@@ -102,7 +103,7 @@ describe('Stage 3 acceptance safety', () => {
     name: 'yizao-sync-service',
     version: '0.3.0-stage3-zhihu-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 32, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 33, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -124,7 +125,7 @@ describe('Stage 3 acceptance safety', () => {
     const evidence = buildAcceptanceEvidence({
       timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
       protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
-      extensionVersion: '2.0.9.5', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      extensionVersion: '2.0.9.6', articleId: 'pkg-safe', packageId: 'pkg-safe',
       snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
       taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
       draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',

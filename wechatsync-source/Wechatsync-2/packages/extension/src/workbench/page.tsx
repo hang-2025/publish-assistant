@@ -533,7 +533,6 @@ export function Workbench() {
   const [checklist, setChecklist] = useState<RealExecutionChecklist | null>(null)
   const [checklistBusy, setChecklistBusy] = useState(false)
   const [checklistNote, setChecklistNote] = useState('')
-  const [zhihuConfirmed, setZhihuConfirmed] = useState(false)
   const [zhihuBusy, setZhihuBusy] = useState(false)
   const [zhihuNote, setZhihuNote] = useState('')
   const [acceptanceChecks, setAcceptanceChecks] = useState<AcceptanceCheck[]>([])
@@ -663,7 +662,7 @@ export function Workbench() {
 
   async function openPackage(pkg: PkgSummary) {
     if (!pkg.packageId) return
-    setDetail(null); setDetailError(''); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([]); setZhihuConfirmed(false)
+    setDetail(null); setDetailError(''); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
     try {
       const currentCapabilities = capabilities || { phase: 'compatibility', realActionsEnabled: false, requirementsBeforeRealActions: [], platforms: FALLBACK_PLATFORM_CAPABILITIES }
       setOpenCap(capabilityFor(pkg.segments, currentCapabilities.platforms))
@@ -930,7 +929,7 @@ export function Workbench() {
   }
 
   async function saveZhihuDraft() {
-    if (!detail || !preview || openCap?.platform?.id !== 'zhihu' || !zhihuConfirmed) return
+    if (!detail || !preview || openCap?.platform?.id !== 'zhihu') return
     setZhihuBusy(true); setZhihuNote(''); setDetailError('')
     let taskId = ''
     try {
@@ -939,8 +938,15 @@ export function Workbench() {
       if (!acceptance.ok || !checked?.snapshot || checked.snapshot.gate.blocks.length) {
         throw new Error('Stage 3 验收前自检未全部通过，已阻止真实草稿操作')
       }
+      const userConfirmed = window.confirm(
+        `确认仅为当前文章“${detail.title}”保存一篇知乎草稿？\n\n这会向知乎发送标题、正文和图片，但不会公开发布。`
+      )
+      if (!userConfirmed) {
+        setZhihuNote('已取消：未向知乎保存草稿。')
+        return
+      }
       const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>('prepareZhihuDraft', {
-        packageId: detail.packageId, userConfirmed: true,
+        packageId: detail.packageId, userConfirmed,
       })
       if (!prepared.started || !prepared.task) {
         if (prepared.reason === 'exists') throw new Error('相同文章与快照已有任务，已阻止重复保存')
@@ -949,7 +955,7 @@ export function Workbench() {
       }
       taskId = prepared.task.taskId
       const snapshotId = prepared.task.snapshotId
-      await call('beginZhihuDraft', { taskId, snapshotId, userConfirmed: true })
+      await call('beginZhihuDraft', { taskId, snapshotId, userConfirmed })
       const response = await chrome.runtime.sendMessage({
         type: 'YIZAO_ZHIHU_DRAFT',
         payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
@@ -975,7 +981,6 @@ export function Workbench() {
       setAcceptanceEvidence(evidence)
       await chrome.storage.local.set({ [ACCEPTANCE_EVIDENCE_KEY]: evidence })
       setZhihuNote(`知乎：草稿已保存；HTML 保真 ${result.fidelityReport?.overall || 'PASS'}。请在任务中心打开草稿检查；不会自动公开发布。`)
-      setZhihuConfirmed(false)
       await reloadServerTasks()
       setTab('tasks')
     } catch (e) {
@@ -1364,24 +1369,19 @@ export function Workbench() {
           </>}
 
           {openCap?.kind === 'guarded-draft' && <>
-            <h3>一键发布到知乎（仅保存草稿 · Stage 3）</h3>
-            <p className="hint">流程：读取发布包 HTML → 只读预检 → Canonical Article 解析 → 锁定不可变快照 → 检查当前 Chrome 知乎登录 → 原位置上传图片 → Caption=HTML img.alt → 保存草稿 → 平台回读 → Fidelity Report。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
+            <h3>一键保存到知乎草稿（Stage 3）</h3>
+            <p className="hint">点击主按钮后会自动完成只读预检和 10 项安全检查；全部通过时只需在弹窗中确认一次，随后保存一篇草稿并回读核验。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
             <div className="acceptance-checks">
               <div className="row">
-                <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy}>{acceptanceBusy ? '正在执行验收前自检…' : '运行 Preflight Acceptance Check'}</button>
-                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '10/10 自检通过，可进行当次确认。' : '真实草稿操作必须先通过全部 10 项自检。'}</span>
+                <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || zhihuBusy}>{acceptanceBusy ? '正在检查准备状态…' : '检查准备状态（可选）'}</button>
+                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '10/10 自检通过。点击保存时仍会重新检查。' : '无需预先操作；点击保存时会自动检查。'}</span>
               </div>
               {!!acceptanceChecks.length && <ul>{acceptanceChecks.map((item) => <li key={item.key} data-check={item.ok ? 'pass' : 'fail'}>
                 <strong>{item.ok ? 'PASS' : 'BLOCK'} · {item.label}</strong><small>{item.detail}</small>
               </li>)}</ul>}
             </div>
-            <label className="row">
-              <input type="checkbox" checked={zhihuConfirmed} disabled={!acceptanceReady} onChange={(e) => setZhihuConfirmed(e.target.checked)} />
-              我确认仅为当前文章保存一篇知乎草稿，并理解这会向知乎发送标题、正文和图片。
-            </label>
             <div className="row">
-              <button className="secondary" onClick={runPreflight} disabled={preflightBusy}>{preflightBusy ? '正在预检…' : '先运行只读预检'}</button>
-              <button onClick={saveZhihuDraft} disabled={!compatibility.ok || !acceptanceReady || !zhihuConfirmed || zhihuBusy}>{zhihuBusy ? '正在保存并进行保真回读…' : '一键发布（知乎仅保存草稿）'}</button>
+              <button onClick={saveZhihuDraft} disabled={!compatibility.ok || zhihuBusy || acceptanceBusy}>{zhihuBusy ? '正在自动检查并保存草稿…' : '一键保存到知乎草稿'}</button>
               <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>
               <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成小样本验收材料（只读）'}</button>
             </div>

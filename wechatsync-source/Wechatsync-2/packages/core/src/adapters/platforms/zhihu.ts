@@ -245,8 +245,13 @@ export class ZhihuAdapter extends CodeAdapter {
     // 1. 转换表格格式 - 知乎 Draft.js 编辑器需要特定格式
     result = this.transformTables(result)
 
-    // 2. Canonical renderer 已把图片放入 figure，并按 HTML alt 生成 figcaption。
-    // 此处不得再次包裹，否则会破坏图片锚点和回读校验。
+    // 2. 知乎把可见图片注释保存在 img[data-caption]，而不是 figcaption。
+    // Canonical renderer 的输出结构固定，因此可在这里做平台专用转换，
+    // 同时保留 figure 和图片原有位置，避免改变正文锚点。
+    result = result.replace(
+      /<figure>\s*(<img\b[^>]*?)>\s*<figcaption>([\s\S]*?)<\/figcaption>\s*<\/figure>/gi,
+      '<figure data-size="normal">$1 data-caption="$2" data-size="normal"></figure>'
+    )
 
     // 3. 代码块格式
     result = result.replace(
@@ -254,8 +259,8 @@ export class ZhihuAdapter extends CodeAdapter {
       '<pre lang="$1"><code>'
     )
 
-    // 4. 移除微信样式属性 (但保留知乎的 data-draft-* 属性)
-    result = result.replace(/\s*data-(?!draft)[a-z-]+="[^"]*"/gi, '')
+    // 4. 移除微信样式属性，但保留知乎的 Draft.js、图片注释及尺寸属性。
+    result = result.replace(/\s*data-(?!(?:draft|caption|size)(?:-|=))[a-z-]+="[^"]*"/gi, '')
     result = result.replace(/\s*style="[^"]*"/gi, '')
 
     return result

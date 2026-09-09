@@ -168,7 +168,11 @@ export function validateCanonicalFidelity(source: CanonicalArticle, readBackHtml
   const actualTables = feature(actual, 'table').map((b) => (b as any).text)
   add(checks, 'tables', JSON.stringify(tables) === JSON.stringify(actualTables), false, '表格单元格语义；样式不属于保真承诺', true)
   const { document } = parseHTML(`<!doctype html><html><body>${readBackHtml}</body></html>`)
-  const captions = Array.from(document.querySelectorAll('img')).map((img) => normalize(img.closest('figure')?.querySelector('figcaption')?.textContent || ''))
+  const captions = Array.from(document.querySelectorAll('img')).map((img) => normalize(
+    img.getAttribute('data-caption')
+      || img.closest('figure')?.querySelector('figcaption')?.textContent
+      || ''
+  ))
   add(checks, 'image-count', source.images.length === actual.images.length, true, `源 ${source.images.length} / 回读 ${actual.images.length}`)
   // Zhihu may not expose a distinct accessibility ALT field. Visible captions
   // are mandatory and provide the stable, user-visible order identity.
