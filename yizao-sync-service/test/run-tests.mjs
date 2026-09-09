@@ -21,6 +21,7 @@ import { getCapabilities, checkRealActionGate } from '../lib/capabilities.mjs';
 import { writeXlsx } from '../lib/xlsx.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { parseAltFile } from '../lib/package.mjs';
+import { healthMatchesExpectedService, parseTrustedExtensionOrigin, workbenchUrlForOrigin } from '../tools/launcher.mjs';
 
 /**
  * 阶段1A 测试：全部在系统临时目录中构造夹具，不读取、不修改真实文章目录与真实 Excel。
@@ -39,6 +40,21 @@ const PLAN_XLSX = path.join(ROOT, '计划表.xlsx');
 const PLAN_TXT = path.join(ROOT, '计划表.txt');
 await fs.writeFile(PLAN_XLSX, '仅用于路径配置测试，不读取内容');
 await fs.writeFile(PLAN_TXT, '不是 xlsx');
+
+test('Windows 启动器只接受严格扩展 Origin 并生成内部工作台地址', () => {
+  const origin = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+  assert.equal(parseTrustedExtensionOrigin({ security: { trustedOrigin: origin } }), origin);
+  assert.equal(workbenchUrlForOrigin(origin), `${origin}/src/workbench/index.html`);
+  assert.equal(parseTrustedExtensionOrigin({ security: { trustedOrigin: 'https://example.com' } }), null);
+  assert.equal(parseTrustedExtensionOrigin({ security: { trustedOrigin: 'chrome-extension://../../token' } }), null);
+  assert.equal(workbenchUrlForOrigin('https://example.com'), null);
+});
+
+test('Windows 启动器不会把其他 8788 服务误认成本地服务', () => {
+  assert.equal(healthMatchesExpectedService({ ok: true, name: 'yizao-sync-service' }), true);
+  assert.equal(healthMatchesExpectedService({ ok: true, name: 'other-service' }), false);
+  assert.equal(healthMatchesExpectedService(null), false);
+});
 
 test('ALT 清单解析保留图片编号前缀和内容冒号', () => {
   assert.deepEqual(parseAltFile([

@@ -15,6 +15,7 @@ Local Files / read-only Excel / Future Database
 ```
 
 - Chrome Extension 的易造工作台位于 `packages/extension/src/workbench`。它负责呈现文章、平台能力和任务状态，不直接读取任意磁盘路径。
+- Windows 启动器位于 `yizao-sync-service/tools/launcher.mjs`，双击入口为 `yizao-sync-service/启动易造发布助手.cmd`。它只负责启动既有本地服务，并使用服务已持久化的受信任扩展 Origin 打开工作台；不会把 Bearer Token 放入 URL，也不会改变配对、Origin 或真实动作闸门。
 - Local API 仅绑定 `127.0.0.1`，负责 Host、Origin、Token、请求大小、命令白名单和严格 payload 校验。
 - `yizao-sync-service/services/application.mjs` 是兼容应用层，保留原有命令，并为知乎、搜狐号分别提供 5 条受保护草稿握手命令。
 - `domain` 定义统一 Article、Task 和状态词汇；旧接口通过转换层渐进接入，不要求一次性迁移。
