@@ -40,6 +40,72 @@ function normalizeImageUrl(value: string): string {
   return value
 }
 
+const IMAGE_URL_KEYS = ['url', 'image_url', 'imageUrl', 'download_url', 'downloadUrl', 'display_url', 'displayUrl', 'main_url', 'mainUrl']
+const IMAGE_URI_KEYS = ['web_uri', 'webUri', 'uri', 'origin_web_uri', 'originWebUri', 'tos_uri', 'tosUri']
+
+function scalarString(value: unknown): string {
+  if (typeof value === 'string') return value.trim()
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = scalarString(item)
+      if (candidate) return candidate
+    }
+  }
+  return ''
+}
+
+function uploadResponseObjects(value: unknown): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = []
+  const queue: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  while (queue.length) {
+    const current = queue.shift()!
+    if (!current.value || current.depth > 5) continue
+    if (Array.isArray(current.value)) {
+      for (const item of current.value) queue.push({ value: item, depth: current.depth + 1 })
+      continue
+    }
+    if (typeof current.value !== 'object') continue
+    const record = current.value as Record<string, unknown>
+    result.push(record)
+    for (const nested of Object.values(record)) {
+      if (nested && typeof nested === 'object') queue.push({ value: nested, depth: current.depth + 1 })
+    }
+  }
+  return result
+}
+
+function fieldFromObjects(objects: Record<string, unknown>[], keys: string[]): string {
+  for (const object of objects) {
+    for (const key of keys) {
+      const candidate = scalarString(object[key])
+      if (candidate) return candidate
+    }
+  }
+  return ''
+}
+
+function deriveTrustedWebUri(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (!/(^|\.)(toutiaoimg\.com|toutiaocdn\.com|pstatp\.com|byteimg\.com)$/i.test(parsed.hostname)) return ''
+    for (const key of IMAGE_URI_KEYS) {
+      const queryValue = parsed.searchParams.get(key)
+      if (queryValue) return queryValue
+    }
+    return decodeURIComponent(parsed.pathname.replace(/^\/+/, '').split('~')[0] || '')
+  } catch {
+    return ''
+  }
+}
+
+function imageUploadShape(value: unknown): string {
+  const keys = new Set<string>()
+  for (const object of uploadResponseObjects(value)) {
+    for (const key of Object.keys(object)) keys.add(key)
+  }
+  return [...keys].slice(0, 16).join(', ') || '无可识别字段'
+}
+
 function findDraftRecord(envelope: any): { id: string; title: string; content: string } | null {
   const candidates = [envelope?.data?.article, envelope?.data, envelope?.article, envelope]
   for (const item of candidates) {
@@ -212,18 +278,22 @@ export class ToutiaoAdapter extends CodeAdapter {
     if (!response.ok) throw new Error(`头条号图片上传失败: HTTP ${response.status}`)
     const envelope = parseJson(response.text)
     if (Number(envelope?.code) !== 0) throw new Error(String(envelope?.message || '头条号图片上传失败'))
-    const data = envelope?.data || {}
-    const url = normalizeImageUrl(String(data.url || data.image_url || ''))
-    const webUri = String(data.web_uri || data.uri || data.origin_web_uri || '')
-    if (!/^https:\/\//.test(url) || !webUri) throw new Error('头条号图片上传响应缺少 URL 或 web_uri')
+    const data = envelope?.data ?? envelope?.result ?? envelope
+    const objects = uploadResponseObjects(data)
+    const url = normalizeImageUrl(fieldFromObjects(objects, IMAGE_URL_KEYS))
+    const webUri = fieldFromObjects(objects, IMAGE_URI_KEYS) || deriveTrustedWebUri(url)
+    if (!/^https:\/\//.test(url) || !webUri) {
+      throw new Error(`头条号图片上传响应缺少 URL 或 web_uri（响应字段：${imageUploadShape(data)}）`)
+    }
+    const imageData = objects.find((object) => IMAGE_URL_KEYS.some((key) => scalarString(object[key]) === fieldFromObjects(objects, IMAGE_URL_KEYS))) || objects[0] || {}
     return {
       url,
       attrs: {
         web_uri: webUri,
         image_type: 1,
-        mime_type: String(data.mime_type || 'image/jpeg'),
-        img_width: Number(data.width || data.img_width || 0),
-        img_height: Number(data.height || data.img_height || 0),
+        mime_type: String(imageData.mime_type || imageData.mimeType || 'image/jpeg'),
+        img_width: Number(imageData.width || imageData.img_width || imageData.imgWidth || 0),
+        img_height: Number(imageData.height || imageData.img_height || imageData.imgHeight || 0),
       },
     }
   }

@@ -231,6 +231,62 @@ describe('guarded Toutiao draft adapter', () => {
     expect(result.success).toBe(false)
     expect(result.readBackVerified).not.toBe(true)
   })
+
+  it('accepts the nested image response variants returned by the current Toutiao editor', async () => {
+    let savedContent = ''
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id_str: '88' } } }), { status: 200 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.imageSource) {
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { image_list: [{ image_url: '//p3.toutiaoimg.com/origin/nested-test', origin_web_uri: 'pgc-image/nested-test', img_width: 600, img_height: 400 }] } }) }
+        }
+        if (request.url.startsWith('/mp/agw/article/publish')) {
+          savedContent = request.form.content
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '24680' } }) }
+        }
+        return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '24680', title: '头条嵌套响应', content: savedContent } }) }
+      }),
+    }
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({
+      title: '头条嵌套响应',
+      html: '<p>正文</p><img src="data:image/png;base64,iVBORw==" alt="图片说明">',
+      markdown: '',
+    }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization })
+
+    expect(result.success).toBe(true)
+    expect(savedContent).toContain('src="https://p3.toutiaoimg.com/origin/nested-test"')
+    expect(savedContent).toContain('web_uri="pgc-image/nested-test"')
+    expect(savedContent).toContain('img_width="600"')
+  })
+
+  it('derives web_uri only from a trusted Toutiao CDN image URL', async () => {
+    let savedContent = ''
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id_str: '88' } } }), { status: 200 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { image: { url: 'https://p3-sign.toutiaoimg.com/tos-cn-i-test/image~tplv-test.image' } } }) }
+        if (request.url.startsWith('/mp/agw/article/publish')) {
+          savedContent = request.form.content
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '24681' } }) }
+        }
+        return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '24681', title: '头条 URI 推导', content: savedContent } }) }
+      }),
+    }
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({
+      title: '头条 URI 推导', html: '<img src="data:image/png;base64,iVBORw==" alt="图片说明">', markdown: '',
+    }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization })
+
+    expect(result.success).toBe(true)
+    expect(savedContent).toContain('web_uri="tos-cn-i-test/image"')
+  })
 })
 
 describe('guarded NetEase draft adapter', () => {
