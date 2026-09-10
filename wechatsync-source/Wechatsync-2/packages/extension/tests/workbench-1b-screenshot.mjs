@@ -1,6 +1,6 @@
 // 阶段1B 工作台自动截图（全部为模拟数据）：仅本地构建产物 + 内存 mock 的 8788 路由。
 // 不连接真实服务、不使用真实账号/目录/Excel/文章。截图顶部固定水印「模拟数据」。
-// 覆盖：文章库能力标签（官网/百家号=发布流程预览、知乎/搜狐=草稿流程预览、头条=待适配禁用）、
+// 覆盖：文章库能力标签（官网/百家号=发布流程预览、知乎/搜狐/头条=受保护草稿、网易=草稿流程模拟）、
 //      官网发布流程预览（任务键/内容版本/目标站点/账号占位/终态动作）、Excel 登记只读预览、
 //      任务中心（服务端+扩展本地合并）。
 import { chromium } from 'playwright'
@@ -24,7 +24,8 @@ const packages = [
   { packageId: 'pkg-official-lightning', relativePath: '官网/yzfanglei.com/智能防雷系统/2026-09-03/防雷官网包', segments: ['官网', 'yzfanglei.com', '智能防雷系统', '2026-09-03', '防雷官网包'], title: '易造防雷官网文章（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-baijiahao', relativePath: '主流平台/百家号/易造科技/2026-09-02/百家号包', segments: ['主流平台', '百家号', '易造科技', '2026-09-02', '百家号包'], title: '百家号图文（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
   { packageId: 'pkg-zhihu', relativePath: '主流平台/zhihu/智能雷暴仪/2026-09-02/知乎包', segments: ['主流平台', 'zhihu', '智能雷暴仪', '2026-09-02', '知乎包'], title: '智能雷暴仪预警应用', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['模拟发布包，不含真实文章'] },
-  { packageId: 'pkg-toutiao', relativePath: '主流平台/toutiao/智能雷暴仪/2026-09-03/头条包', segments: ['主流平台', 'toutiao', '智能雷暴仪', '2026-09-03', '头条包'], title: '雷电预警头条版（待适配）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['待适配平台，仅只读展示'] },
+  { packageId: 'pkg-sohu', relativePath: '主流平台/sohu/智能雷暴仪/2026-09-02/搜狐包', segments: ['主流平台', 'sohu', '智能雷暴仪', '2026-09-02', '搜狐包'], title: '智能雷暴仪搜狐号文章', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['受保护草稿实现待真实账号验收'] },
+  { packageId: 'pkg-toutiao', relativePath: '主流平台/toutiao/智能雷暴仪/2026-09-03/头条包', segments: ['主流平台', 'toutiao', '智能雷暴仪', '2026-09-03', '头条包'], title: '雷电预警头条版（受保护草稿）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['受保护草稿实现待真实账号验收'] },
   { packageId: 'pkg-netease', relativePath: '主流平台/网易号/智能雷暴仪/2026-09-04/网易包', segments: ['主流平台', '网易号', '智能雷暴仪', '2026-09-04', '网易包'], title: '雷电预警网易版（模拟）', imageCount: 1, altCount: 1, issueCount: 0, issues: [], notes: ['网易草稿流程仅本地模拟'] },
 ]
 
@@ -182,13 +183,13 @@ const checklist = {
 }
 
 const capabilities = {
-  phase: '3-zhihu-draft-unverified',
+  phase: '5-toutiao-draft-unverified',
   realActionsEnabled: false,
   runtime: {
-    serviceVersion: '0.3.0-stage3-zhihu-draft',
+    serviceVersion: '0.4.0-stage5-toutiao-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    acceptanceBuildId: 'stage3-zhihu-html-fidelity-v3.3',
-    requiredExtensionBuildId: 'stage3-zhihu-html-fidelity-v3.3',
+    acceptanceBuildId: 'stage5-toutiao-draft-v3.4',
+    requiredExtensionBuildId: 'stage5-toutiao-draft-v3.4',
   },
   actions: {
     upload: '真实上传/保存草稿',
@@ -203,8 +204,8 @@ const capabilities = {
     { id: 'yzfanglei.com', name: '易造防雷官网（yzfanglei.com）', group: '官网', status: 'simulation-ready', currentActions: ['只读扫描', '发送快照预览', '模拟发布流程'], plannedActions: ['真实后台填写后等待用户最终提交'], evidence: ['模拟数据'], risks: ['真实执行未验收'] },
     { id: 'baijiahao', name: '百家号', group: '主流平台', status: 'simulation-ready', currentActions: ['只读扫描', '发送快照预览', '模拟发布流程'], plannedActions: ['复用原流程等待用户最终提交'], evidence: ['模拟数据'], risks: ['真实账号未验收'] },
     { id: 'zhihu', name: '知乎', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
-    { id: 'sohu', name: '搜狐号', group: '主流平台', status: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['保存草稿'], evidence: ['模拟数据'], risks: ['表格保真未验收'] },
-    { id: 'toutiao', name: '头条号', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
+    { id: 'sohu', name: '搜狐号', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
+    { id: 'toutiao', name: '头条号', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
     { id: 'netease', name: '网易号', aliases: ['网易', '网易号'], group: '主流平台', status: 'draft-simulation', workflow: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['小样本草稿验收'], evidence: ['仅本地模拟'], risks: ['不得显示草稿或发布成功'] },
     { id: 'xiaohongshu', name: '小红书', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
   ],
@@ -243,7 +244,7 @@ try {
   })
   await page.route('http://127.0.0.1:8788/**', async (route) => {
     const req = route.request()
-    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.3.0-stage3-zhihu-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 33, id: 'stage3-zhihu-html-fidelity-v3.3', extensionBuildId: 'stage3-zhihu-html-fidelity-v3.3' } } })
+    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.4.0-stage5-toutiao-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 34, id: 'stage5-toutiao-draft-v3.4', extensionBuildId: 'stage5-toutiao-draft-v3.4' } } })
     const message = req.postDataJSON()
     if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' }, archive: { configured: true, resolved: 'C:\\模拟目录\\已归档' } }, excel: { configured: true, resolved: 'C:\\模拟目录\\计划表\\阶段1C模拟登记表.xlsx', sheetName: '9月执行计划' }, mappings: { platformValues: { 'eyzao.com': ['官网', 'eyzao.com', 'www.eyzao.com'], baijiahao: ['百家号', 'baijiahao'], zhihu: ['知乎', 'zhihu'], sohu: ['搜狐', '搜狐号', 'sohu'] } }, captionPolicy: { official: 'keep-existing-only', baijiahao: 'keep-existing-only', draft: 'use-existing-alt-after-preview' } } })
     if (message.command === 'scan') return route.fulfill({ json: { ok: true, packages } })
@@ -331,37 +332,35 @@ try {
 
   await page.getByRole('button', { name: '扫描未发布' }).click()
   await page.getByRole('button', { name: /易造新品发布通稿/ }).waitFor()
-  assert.equal(await page.locator('.source-group').count(), 5, '五个来源分组：官网/百家号/知乎/头条/网易')
+  assert.equal(await page.locator('.source-group').count(), 6, '六个来源分组：官网/百家号/知乎/搜狐/头条/网易')
   assert.equal(await page.locator('.pkg[data-cap="publish-preview"]').count(), 4, '三个官网与百家号 = 发布流程预览')
   await page.getByLabel('平台筛选').selectOption({ label: '官方网站' })
   assert.equal(await page.locator('.source-group').count(), 1, '三个官网应聚合为一个官方网站平台区块')
   assert.equal(await page.locator('.pkg').count(), 3, '官方网站平台应包含三个站点的文章')
   assert.equal(await page.locator('.site-tag').count(), 3, '每篇官网文章必须保留目标站点标识')
   await page.getByRole('button', { name: '清除筛选' }).click()
-  assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 1, '知乎 = 受保护单篇草稿')
+  assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 3, '知乎/搜狐/头条 = 受保护单篇草稿')
   assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 1, '网易 = 草稿流程预览')
-  assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 1, '头条 = 待适配')
-  const notReady = page.locator('.pkg[data-cap="not-ready"]')
-  assert.equal(await notReady.isDisabled(), true, '待适配卡片禁用')
-  assert.equal((await notReady.locator('.pkg-action').innerText()).trim(), '待适配')
+  assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 0, '当前截图夹具不含小红书待适配包')
   await page.getByLabel('平台筛选').selectOption({ label: '知乎' })
   assert.equal(await page.locator('.pkg').count(), 1, '选择知乎后只显示知乎文章')
   await page.getByLabel('搜索文章').fill('不存在的文章')
   await page.getByText('没有找到符合条件的文章。').waitFor()
   await page.getByRole('button', { name: '查看全部' }).click()
-  assert.equal(await page.locator('.pkg').count(), 7, '查看全部应清除组合筛选')
+  assert.equal(await page.locator('.pkg').count(), 8, '查看全部应清除组合筛选')
   await shot('workbench-1b-library.png')
 
   await page.getByRole('button', { name: '平台与账号' }).click()
   await page.getByText('真实动作未启用').waitFor()
   assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 2, '官方网站聚合卡与百家号可做模拟')
   assert.equal(await page.locator('.cap-card').filter({ hasText: '3 个站点：eyzao.com、eyzao.cn、yzfanglei.com' }).count(), 1, '平台页应把三个官网显示为一个平台')
-  assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 2, '搜狐/网易可做草稿流程模拟')
-  assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 2, '头条/小红书仍待适配')
+  assert.equal(await page.locator('.cap-card[data-status="guarded-draft-unverified"]').count(), 3, '知乎/搜狐/头条为受保护草稿')
+  assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 1, '网易仍为草稿流程模拟')
+  assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 1, '小红书仍待适配')
   await shot('workbench-1d-platform-capabilities.png')
 
   await page.getByRole('button', { name: '安全闸门' }).click()
-  await page.getByRole('heading', { name: '安全闸门 · 真实动作检查（Stage 3）' }).waitFor()
+  await page.getByRole('heading', { name: '安全闸门 · 真实动作检查' }).waitFor()
   await page.getByRole('button', { name: '检查真实动作闸门（只读）' }).click()
   await page.locator('.gate-table tbody tr').first().waitFor()
   assert.equal(await page.locator('.gate-table tbody tr').count(), capabilities.platforms.length * Object.keys(capabilities.actions).length, '真实动作闸门需要逐平台逐动作检查')

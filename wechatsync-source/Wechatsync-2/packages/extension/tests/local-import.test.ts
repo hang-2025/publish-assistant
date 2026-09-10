@@ -5,6 +5,7 @@ import { importDocument, resolveImage, sanitizeHtml, previewDocument, withoutDup
 import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { SohuAdapter } from '../../core/src/adapters/platforms/sohu'
+import { ToutiaoAdapter } from '../../core/src/adapters/platforms/toutiao'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -21,6 +22,7 @@ function file(name: string, content: string | Uint8Array, path = name, type = ''
 const png = () => file('中文 图.png', new Uint8Array([137,80,78,71]), '发布包/配图/中文 图.png', 'image/png')
 const draftAuthorization = { action: 'saveDraft' as const, platform: 'zhihu' as const, taskId: 'tsk_12345678_deadbeef', snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa' }
 const sohuDraftAuthorization = { action: 'saveDraft' as const, platform: 'sohu' as const, taskId: 'tsk_12345678_cafebabe', snapshotId: 'snap-bbbbbbbbbbbbbbbbbbbbbbbb' }
+const toutiaoDraftAuthorization = { action: 'saveDraft' as const, platform: 'toutiao' as const, taskId: 'tsk_12345678_abcdef12', snapshotId: 'snap-cccccccccccccccccccccccc' }
 
 function zhihuRuntime(fetchImpl: (url: string, options?: RequestInit) => Promise<Response>) {
   return {
@@ -150,13 +152,92 @@ describe('guarded Sohu draft adapter', () => {
   })
 })
 
+describe('guarded Toutiao draft adapter', () => {
+  it('rejects public publish and taskless saveDraft before touching the platform', async () => {
+    const adapter = new ToutiaoAdapter()
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+    const runtime = zhihuRuntime(fetchMock)
+    runtime.tabs = { query: vi.fn(), create: vi.fn(), waitForLoad: vi.fn(), executeScript: vi.fn() }
+    await adapter.init(runtime)
+    await expect(adapter.publish({ title: 'x', html: '<p>x</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('任务/快照授权')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(runtime.tabs.executeScript).not.toHaveBeenCalled()
+  })
+
+  it('uses only save=0, preserves image descriptions and verifies the saved draft by readback', async () => {
+    const stages: string[] = []
+    let savedForm: Record<string, string> = {}
+    let savedContent = ''
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async (url) => {
+      if (url.includes('/mp/agw/media/get_media_info')) {
+        return new Response(JSON.stringify({ data: { user: { id_str: '88', screen_name: '头条验收号' } } }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 7, url: 'https://mp.toutiao.com/profile_v4/graphic/publish' }]),
+      create: vi.fn(),
+      waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { url: '//p1.toutiaoimg.com/origin/test', web_uri: 'pgc-image/test', width: 600, height: 400, mime_type: 'image/jpeg' } }) }
+        if (request.url.startsWith('/mp/agw/article/publish')) {
+          savedForm = request.form
+          savedContent = request.form.content
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '13579' } }) }
+        }
+        if (request.url.startsWith('/mp/agw/article/edit')) {
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '13579', title: '头条测试', content: savedContent } }) }
+        }
+        return { ok: false, status: 404, text: '{}' }
+      }),
+    }
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({
+      title: '头条测试',
+      html: '<p>前文</p><img src="data:image/png;base64,iVBORw==" alt="头条图片描述"><p><strong>后文</strong></p>',
+      markdown: '',
+    }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization, onDraftStage: (stage) => stages.push(stage) })
+
+    expect(result.success).toBe(true)
+    expect(result.draftOnly).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+    expect(result.fidelityVerified).toBe(true)
+    expect(result.postUrl).toBe('https://mp.toutiao.com/profile_v4/graphic/publish?from=edit&pgc_id=13579')
+    expect(savedForm.save).toBe('0')
+    expect(savedForm).not.toHaveProperty('save', '1')
+    expect(savedContent).toContain('class="pgc-img-caption">头条图片描述</p>')
+    expect(savedContent).toContain('web_uri="pgc-image/test"')
+    expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('does not report success when platform readback fails', async () => {
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id: '88' } } }), { status: 200 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => args[0].url.startsWith('/mp/agw/article/publish')
+        ? { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '9' } }) }
+        : { ok: false, status: 500, text: '{}' }),
+    }
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({ title: '头条测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization })
+    expect(result.success).toBe(false)
+    expect(result.readBackVerified).not.toBe(true)
+  })
+})
+
 describe('Stage 3 acceptance safety', () => {
   const compatibleHealth = {
     ok: true,
     name: 'yizao-sync-service',
-    version: '0.3.0-stage3-zhihu-draft',
+    version: '0.4.0-stage5-toutiao-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 33, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 34, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -178,7 +259,7 @@ describe('Stage 3 acceptance safety', () => {
     const evidence = buildAcceptanceEvidence({
       timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
       protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
-      extensionVersion: '2.0.9.6', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      extensionVersion: '2.0.9.7', articleId: 'pkg-safe', packageId: 'pkg-safe',
       snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
       taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
       draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
@@ -253,6 +334,15 @@ describe('canonical publishing HTML fidelity', () => {
       expect(report.overall).toBe('FAIL')
       expect(report.fidelityVerified).toBe(false)
     }
+  })
+
+  it('recognizes Toutiao pgc image blocks and visible descriptions on readback', () => {
+    const source = parseCanonicalArticle('<p>前文</p><img src="x" alt="头条图注"><p>后文</p>', '头条测试')
+    const readBack = '<p>前文</p><div class="pgc-img"><img src="https://p1.toutiaoimg.com/origin/x" alt="头条图注"><p class="pgc-img-caption">头条图注</p></div><p>后文</p>'
+    const report = validateCanonicalFidelity(source, readBack, '头条测试')
+    expect(report.fidelityVerified).toBe(true)
+    expect(report.checks.find((check) => check.key === 'image-anchor')?.status).toBe('PASS')
+    expect(report.checks.find((check) => check.key === 'caption-equals-html-alt')?.status).toBe('PASS')
   })
 })
 

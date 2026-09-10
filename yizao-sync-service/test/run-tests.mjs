@@ -226,11 +226,12 @@ test('Task state machine：允许顺序推进和幂等更新，拒绝跳级、�
   assert.throws(() => createTask({ status: 'made_up' }), /状态无效/);
 });
 
-test('平台 Registry：知乎仅开放受保护草稿实现，公开发布与未验收能力保持关闭', async () => {
+test('平台 Registry：受保护草稿平台公开发布与未验收能力保持关闭', async () => {
   assert.equal(platformRegistry.get('www.eyzao.com').id, 'eyzao.com');
   assert.equal(platformRegistry.get('知乎').workflow, 'guarded-draft');
   assert.equal(platformRegistry.get('知乎').capabilities.implementationAvailable, true);
-  assert.equal(platformRegistry.get('toutiao').workflow, 'unsupported');
+  assert.equal(platformRegistry.get('头条号').workflow, 'guarded-draft');
+  assert.equal(platformRegistry.get('toutiao').capabilities.implementationAvailable, true);
   assert.equal(platformRegistry.get('网易').workflow, 'draft-simulation');
   assert.equal(platformRegistry.get('netease').capabilities.simulate, true);
   assert.equal((await platformRegistry.get('netease').saveDraft()).allowed, false);
@@ -355,8 +356,8 @@ test('health 无需令牌，返回版本', async () => {
   const json = await res.json();
   assert.equal(json.name, 'yizao-sync-service');
   assert.equal(json.protocol.version, 2);
-  assert.equal(json.build.packageVersion, 33);
-  assert.equal(json.build.id, 'stage3-zhihu-html-fidelity-v3.3');
+  assert.equal(json.build.packageVersion, 34);
+  assert.equal(json.build.id, 'stage5-toutiao-draft-v3.4');
 });
 
 test('命令接口：无 Origin / 网页 Origin / 错误 Host 一律拒绝', async () => {

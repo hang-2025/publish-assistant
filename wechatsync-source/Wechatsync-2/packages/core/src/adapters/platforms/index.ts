@@ -5,6 +5,7 @@
 export { DoubanAdapter } from './douban'
 export { XueqiuAdapter } from './xueqiu'
 export { SohuAdapter } from './sohu'
+export { ToutiaoAdapter } from './toutiao'
 export { WoshipmAdapter } from './woshipm'
 export { ZhihuAdapter } from './zhihu'
 export { JuejinAdapter } from './juejin'

@@ -1,9 +1,9 @@
 {
   "name": "yizao-sync-service",
-  "version": "0.3.0-stage3-zhihu-draft",
+  "version": "0.4.0-stage5-toutiao-draft",
   "private": true,
   "type": "module",
-  "description": "易造发布助手本地服务（保留只读/模拟能力，并提供受保护的知乎单篇保存草稿协调）",
+  "description": "易造发布助手本地服务（保留只读/模拟能力，并提供受保护的知乎、搜狐号、头条号单篇保存草稿协调）",
   "engines": { "node": ">=18.17" },
   "scripts": {
     "start": "node server.mjs",

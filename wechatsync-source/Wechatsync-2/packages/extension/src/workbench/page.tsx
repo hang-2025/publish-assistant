@@ -6,13 +6,13 @@ import { assertCaptionPolicy, parseCanonicalArticle, type FidelityReport } from 
 import { confirmArchivedSimulated as confirmLocalArchivedSimulated, confirmExcelRegisteredSimulated as confirmLocalExcelRegisteredSimulated, confirmPublishedSimulated as confirmLocalPublishedSimulated, createSimulatedTask, markPackageIdsStale, refreshTasks, removeTask as removeSimTask, restoreTasks, type SimTask } from './tasks'
 
 /**
- * 易造发布助手 · 工作台（Stage 3：仅知乎单篇保存草稿进入受保护真实闭环）
+ * 易造发布助手 · 工作台（知乎、搜狐号、头条号单篇保存草稿进入受保护真实闭环）
  * - 只读扫描本地文章目录、安全预览正文、图片与 ALT/图注对照；
  * - 官网/百家号：经本地服务生成「执行预览与发送快照」，可运行「模拟发布流程」，
  *   终态停在「等待用户最终提交（模拟）」，绝不自动点击最终发布；
- * - 知乎：可在用户当次确认与服务端快照复核后保存一篇草稿；搜狐、网易仍仅模拟；
- * - 头条/小红书等：标注「待适配」，不提供执行入口；
- * - 不公开发布、不修改 Excel、不移动文件；知乎草稿以外的真实上传全部关闭。
+ * - 知乎、搜狐号、头条号：可在用户当次确认与服务端快照复核后保存一篇草稿；
+ * - 网易仍仅模拟，小红书标注「待适配」且不提供执行入口；
+ * - 不公开发布、不修改 Excel、不移动文件；受保护草稿内部图片上传以外的真实上传全部关闭。
  */
 
 interface PkgSummary {
@@ -323,7 +323,7 @@ const FALLBACK_PLATFORM_CAPABILITIES: CapabilityPlatform[] = [
     status: 'simulation-ready', workflow: 'official-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
   })),
   ...[
-    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']],
+    ['zhihu', '知乎', ['知乎']], ['sohu', '搜狐号', ['搜狐', '搜狐号']], ['toutiao', '头条号', ['头条', '头条号']],
   ].map(([id, name, aliases]) => ({
     id: id as string, name: name as string, aliases: aliases as string[], group: '主流平台',
     status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: [], plannedActions: [], evidence: [], risks: [],
@@ -335,7 +335,7 @@ const FALLBACK_PLATFORM_CAPABILITIES: CapabilityPlatform[] = [
     status: 'draft-simulation', workflow: 'draft-simulation', currentActions: [], plannedActions: [], evidence: [], risks: [],
   })),
   ...[
-    ['toutiao', '头条号'], ['xiaohongshu', '小红书'],
+    ['xiaohongshu', '小红书'],
   ].map(([id, name]) => ({
     id, name, aliases: [], group: '待适配平台', status: 'not-adapted', workflow: 'unsupported',
     currentActions: [], plannedActions: [], evidence: [], risks: [],
@@ -432,6 +432,7 @@ function formatPlatformValues(values?: Record<string, string[]>) {
     baijiahao: ['baijiahao', '百家号'],
     zhihu: ['zhihu', '知乎'],
     sohu: ['sohu', '搜狐', '搜狐号'],
+    toutiao: ['toutiao', '头条', '头条号'],
   })
   return entries.map(([key, list]) => `${key} = ${(list || []).join('，')}`).join('\n')
 }
@@ -938,7 +939,7 @@ export function Workbench() {
         mark('login', `${platform?.name || '平台'}登录状态可用`, false, (e as Error).message || `无法检查${platform?.name || '平台'}登录状态`)
       }
 
-      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu'].includes(platform.id))
+      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu', 'toutiao'].includes(platform.id))
       mark('article', `仅选中 1 篇${platform?.name || ''}文章`, oneArticle, oneArticle ? `packageId ${detail!.packageId}` : `请在文章库只选择一篇${platform?.name || ''}文章`)
       if (oneArticle) {
         try {
@@ -984,11 +985,14 @@ export function Workbench() {
   }
 
   async function saveGuardedDraft() {
-    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu'].includes(openCap.platform.id)) return
-    const platform = openCap.platform as { id: 'zhihu' | 'sohu'; name: string }
-    const commands = platform.id === 'zhihu'
-      ? { prepare: 'prepareZhihuDraft', begin: 'beginZhihuDraft', fail: 'failZhihuDraft', message: 'YIZAO_ZHIHU_DRAFT' }
-      : { prepare: 'prepareSohuDraft', begin: 'beginSohuDraft', fail: 'failSohuDraft', message: 'YIZAO_SOHU_DRAFT' }
+    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu', 'toutiao'].includes(openCap.platform.id)) return
+    const platform = openCap.platform as { id: 'zhihu' | 'sohu' | 'toutiao'; name: string }
+    const commandsByPlatform = {
+      zhihu: { prepare: 'prepareZhihuDraft', begin: 'beginZhihuDraft', fail: 'failZhihuDraft', message: 'YIZAO_ZHIHU_DRAFT' },
+      sohu: { prepare: 'prepareSohuDraft', begin: 'beginSohuDraft', fail: 'failSohuDraft', message: 'YIZAO_SOHU_DRAFT' },
+      toutiao: { prepare: 'prepareToutiaoDraft', begin: 'beginToutiaoDraft', fail: 'failToutiaoDraft', message: 'YIZAO_TOUTIAO_DRAFT' },
+    } as const
+    const commands = commandsByPlatform[platform.id]
     setGuardedDraftBusy(true); setGuardedDraftNote(''); setDetailError('')
     let taskId = ''
     try {
@@ -1142,7 +1146,7 @@ export function Workbench() {
   return <main>
     <header>
       <div>
-        <small>YIZAO PUBLISH WORKBENCH · STAGE 3（仅知乎单篇保存草稿）</small>
+        <small>YIZAO PUBLISH WORKBENCH · 受保护单篇草稿</small>
         <h1>易造发布助手 · 工作台</h1>
         <p data-state={serviceState}>
           {serviceState === 'checking' && '正在检查本地服务…'}
@@ -1162,8 +1166,8 @@ export function Workbench() {
 
     <section className="acceptance-mode card" data-compatible={compatibility.ok ? 'yes' : 'no'}>
       <div>
-        <strong>Stage 3 验收模式</strong>
-        <span>仅允许知乎单篇 saveDraft</span>
+        <strong>受保护草稿验收模式</strong>
+        <span>仅允许知乎、搜狐号、头条号单篇 saveDraft</span>
         <span className="blocked">publish 永久禁用</span>
       </div>
       <dl className="acceptance-versions">
@@ -1540,7 +1544,7 @@ export function Workbench() {
     </section>}
 
     {tab === 'safety' && <section className="card">
-      <h2>安全闸门 · 真实动作检查（Stage 3）</h2>
+      <h2>安全闸门 · 真实动作检查</h2>
       <p className="hint">这是进入真实阶段前的“刹车盘”：只检查规则，不执行任何上传、公开发布、Excel 写入或文件归档。当前版本预期结果应为全部关闭或不支持。</p>
       {!capabilities && <p className="hint">本地服务暂未返回能力表。请确认服务已启动并完成配对。</p>}
       {capabilities && <>
@@ -1572,8 +1576,8 @@ export function Workbench() {
     </section>}
 
     {tab === 'tasks' && <section className="card">
-      <h2>任务中心 · 模拟与知乎草稿（Stage 3）</h2>
-      <p className="hint">官网/百家号与搜狐仍为模拟；知乎可出现受保护的真实草稿任务。草稿保存成功不等于公开发布，后续发布、Excel 登记和归档不会自动触发。</p>
+      <h2>任务中心 · 模拟与受保护草稿</h2>
+      <p className="hint">官网/百家号仍为模拟；知乎、搜狐号、头条号可出现受保护的真实草稿任务。草稿保存成功不等于公开发布，后续发布、Excel 登记和归档不会自动触发。</p>
 
       {acceptanceEvidence && <div className="acceptance-evidence">
         <strong>非敏感验收证据已就绪</strong>
@@ -1605,7 +1609,7 @@ export function Workbench() {
         <ul className="tasks">{serverTasks.map((t) => <li key={t.taskId}>
           <div className="task-head">
             <strong>{t.title}</strong>
-            <span className={`badge${t.mode === 'simulate' ? ' sim' : ''}`}>{t.mode === 'zhihu-draft' ? '真实草稿' : '模拟'}</span>
+            <span className={`badge${t.mode === 'simulate' ? ' sim' : ''}`}>{['zhihu-draft', 'sohu-draft', 'toutiao-draft'].includes(t.mode) ? '受保护草稿' : '模拟'}</span>
             <span className="badge">{t.platformName || t.platform}</span>
             <small>{t.accountLabel || t.accountId}</small>
             <small className="mono">内容版本 {t.contentVersionShort}</small>
@@ -1622,14 +1626,14 @@ export function Workbench() {
             <button className="secondary" disabled={t.publish?.status !== '人工确认已发布' || t.excel?.status === '已登记'} onClick={() => confirmServerExcelRegistered(t)}>{t.excel?.status === '已登记' ? '已模拟登记' : (t.publish?.status === '人工确认已发布' ? '模拟确认已登记' : '需先确认发布')}</button>
             <button className="secondary" disabled={t.publish?.status !== '人工确认已发布' || t.excel?.status !== '已登记' || t.archive?.status === '已归档'} onClick={() => confirmServerArchived(t)}>{t.archive?.status === '已归档' ? '已模拟归档' : (t.excel?.status === '已登记' ? '模拟确认已归档' : '需先登记')}</button>
           </div>}
-          {t.mode === 'zhihu-draft' && t.draftResult?.postUrl && <div className="confirm-row">
-            <button onClick={() => chrome.tabs.create({ url: t.draftResult!.postUrl })}>打开知乎草稿</button>
-            <span className="hint">知乎：草稿已保存 · 保真 {t.draftResult.fidelity?.overall || 'PASS'} · 草稿 ID：{t.draftResult.postId}；公开发布仍由用户在知乎页面自行决定。</span>
+          {['zhihu-draft', 'sohu-draft', 'toutiao-draft'].includes(t.mode) && t.draftResult?.postUrl && <div className="confirm-row">
+            <button onClick={() => chrome.tabs.create({ url: t.draftResult!.postUrl })}>打开{t.platformName || t.platform}草稿</button>
+            <span className="hint">{t.platformName || t.platform}：草稿已保存 · 保真 {t.draftResult.fidelity?.overall || 'PASS'} · 草稿 ID：{t.draftResult.postId}；公开发布仍由用户在平台页面自行决定。</span>
           </div>}
-          {t.mode === 'zhihu-draft' && t.draftResult?.fidelity && <ul className="checklist" aria-label="Fidelity Report">{t.draftResult.fidelity.checks.map((check) => <li key={check.key}>
+          {['zhihu-draft', 'sohu-draft', 'toutiao-draft'].includes(t.mode) && t.draftResult?.fidelity && <ul className="checklist" aria-label="Fidelity Report">{t.draftResult.fidelity.checks.map((check) => <li key={check.key}>
             <strong>{check.status} · {check.key}{check.required ? '（必需）' : ''}</strong>：{check.detail}
           </li>)}</ul>}
-          {t.mode === 'zhihu-draft' && t.fidelityFailure && <div className="warn">
+          {['zhihu-draft', 'sohu-draft', 'toutiao-draft'].includes(t.mode) && t.fidelityFailure && <div className="warn">
             <strong>Fidelity Report：{t.fidelityFailure.overall}（未标记 draft_saved）</strong>
             <ul className="checklist">{t.fidelityFailure.checks.map((check) => <li key={check.key}>
               <strong>{check.status} · {check.key}{check.required ? '（必需）' : ''}</strong>：{check.detail}
@@ -1648,7 +1652,7 @@ export function Workbench() {
       </>}
       {serviceState === 'ok' && serverTasks.length === 0 && <p className="hint">暂无服务端持久任务。</p>}
 
-      <h3 className="state-title">知乎 / 搜狐 · 扩展本地草稿模拟</h3>
+      <h3 className="state-title">扩展本地草稿模拟</h3>
       {!tasks.length && <p className="hint">暂无草稿模拟任务。请在文章库打开发布包后创建。</p>}
       <ul className="tasks">{tasks.map((t) => <li key={t.id}>
         <div className="task-head">
@@ -1680,7 +1684,7 @@ export function Workbench() {
     </section>}
 
     <footer>
-      <p>Stage 3 仅允许在用户当次确认、不可变快照复核和当前 Chrome 知乎登录检查通过后保存一篇知乎草稿。公开发布、真实 Excel 写入、文件移动/删除、真实归档及旧执行器仍全部禁用；其他平台继续只读或模拟。</p>
+      <p>仅允许在用户当次确认、不可变快照复核和当前 Chrome 对应平台登录检查通过后，向知乎、搜狐号或头条号保存一篇草稿。公开发布、真实 Excel 写入、文件移动/删除、真实归档及旧执行器仍全部禁用；其他平台继续只读或模拟。</p>
       <p>能力标签说明：<em className="tag">只读</em> 仅查看不改写文件；<em className="tag">模拟</em> 不调用真实平台接口；<em className="tag">待适配</em> 平台/网站尚未接入；<em className="tag">需要另行授权</em> 真实发布/草稿/归档需单独授权并完成验收。</p>
     </footer>
   </main>

@@ -22,6 +22,7 @@ import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
 import { ArticleService } from './article-service.mjs';
 import { ZhihuDraftService } from './zhihu-draft-service.mjs';
 import { SohuDraftService } from './sohu-draft-service.mjs';
+import { ToutiaoDraftService } from './toutiao-draft-service.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { createLocalApiServer } from '../routes/local-api.mjs';
 import { platformRegistry } from '../platforms/registry.mjs';
@@ -51,6 +52,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *     · 阶段2I 1 条：generateRealExecutionChecklist（真实执行验收单，只读生成）；
  *     · 阶段3 5 条：prepare/begin/advance/complete/failZhihuDraft（仅知乎保存草稿）；
  *     · 阶段4 5 条：prepare/begin/advance/complete/failSohuDraft（仅搜狐号保存草稿）；
+ *     · 阶段5 5 条：prepare/begin/advance/complete/failToutiaoDraft（仅头条号保存草稿）；
  *   payload 用严格 schema（assertAllowedKeys），不接受任意路径/URL/命令名；
  * - getPackage / 发送快照只接受扫描时签发的受控 packageId，不接受任何路径；
  *   服务端用 realpath（解析 junction/符号链接）复核包与每张图片仍位于授权根目录之内。
@@ -94,6 +96,7 @@ const DEFAULT_PLATFORM_VALUES = {
   baijiahao: ['baijiahao', '百家号'],
   zhihu: ['zhihu', '知乎'],
   sohu: ['sohu', '搜狐', '搜狐号'],
+  toutiao: ['toutiao', '头条', '头条号'],
 };
 const DEFAULT_CAPTION_POLICY = {
   official: 'keep-existing-only',
@@ -507,8 +510,23 @@ async function loadSohuDraftSnapshot(packageId) {
   return { ...context, snapshot };
 }
 
+async function loadToutiaoDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'toutiao') {
+    throw new Error(`发布包与头条号不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
+
 const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
 const sohuDraftService = new SohuDraftService({ store, loadSnapshot: loadSohuDraftSnapshot });
+const toutiaoDraftService = new ToutiaoDraftService({ store, loadSnapshot: loadToutiaoDraftSnapshot });
 
 async function cmdPrepareZhihuDraft(payload) {
   assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
@@ -570,6 +588,37 @@ async function cmdCompleteSohuDraft(payload) {
 async function cmdFailSohuDraft(payload) {
   assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
   return { mode: 'sohu-draft', task: sanitizeTask(await sohuDraftService.fail(payload || {})) };
+}
+
+async function cmdPrepareToutiaoDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('toutiao').createTask({
+    createDraftTask: () => toutiaoDraftService.prepare(payload || {}),
+  });
+  return { mode: 'toutiao-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginToutiaoDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('toutiao').saveDraft({
+    saveDraft: () => toutiaoDraftService.begin(payload || {}),
+  });
+  return { mode: 'toutiao-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceToutiaoDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'toutiao-draft', task: sanitizeTask(await toutiaoDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteToutiaoDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'toutiao-draft', task: sanitizeTask(await toutiaoDraftService.complete(payload || {})) };
+}
+
+async function cmdFailToutiaoDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'toutiao-draft', task: sanitizeTask(await toutiaoDraftService.fail(payload || {})) };
 }
 
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
@@ -1201,6 +1250,11 @@ const COMMANDS = {
   advanceSohuDraft: cmdAdvanceSohuDraft,
   completeSohuDraft: cmdCompleteSohuDraft,
   failSohuDraft: cmdFailSohuDraft,
+  prepareToutiaoDraft: cmdPrepareToutiaoDraft,
+  beginToutiaoDraft: cmdBeginToutiaoDraft,
+  advanceToutiaoDraft: cmdAdvanceToutiaoDraft,
+  completeToutiaoDraft: cmdCompleteToutiaoDraft,
+  failToutiaoDraft: cmdFailToutiaoDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 
@@ -1260,9 +1314,9 @@ export async function startApplication() {
     } else {
       console.log('令牌已存在（如需查看：node server.mjs --print-token）');
     }
-    console.log('白名单命令（30 条）：原有 20 条只读/模拟命令；知乎与搜狐号各新增 5 条受保护草稿握手命令。');
+    console.log('白名单命令（35 条）：原有 20 条只读/模拟命令；知乎、搜狐号与头条号各新增 5 条受保护草稿握手命令。');
     console.log('包↔平台绑定：prepare/simulate 只允许把包发往其受控目录推导出的站点，不匹配直接拒绝。');
-    console.log('Stage 3：仅受保护的知乎单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
+    console.log('受保护草稿：仅知乎、搜狐号或头条号单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
     console.log('不提供公开发布/Excel 写入登记/真实归档命令，不启动旧执行器，不修改文章与 Excel。');
     console.log('站点锁作用域：仅在新服务遵循同一文件锁协议的进程之间互斥，不覆盖未接入本协议的旧执行器。');
   });

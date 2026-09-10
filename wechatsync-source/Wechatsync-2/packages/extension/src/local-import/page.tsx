@@ -115,7 +115,7 @@ export function LocalImport() {
         {article.warnings.map((w,i) => <p className="hint" key={i}>{w}</p>)}
         {!!article.missing.length && <div className="error">有 {article.missing.length} 张图片未找到，暂不能同步。请选择包含配图的发布包或补充图片，再重新读取。网络图片也需先由你下载并选入。<ul>{article.missing.map((s,i) => <li key={i}>{s}</li>)}</ul></div>}
       </>}
-      <h2>3. 选择目标平台</h2><p className="hint">本地试用入口仅开放已核对草稿路径的平台。网易、头条、小红书缺少公开适配器，未接入；官网与原百家号流程不变。</p>
+      <h2>3. 选择目标平台</h2><p className="hint">本地试用入口仅开放已核对草稿路径的平台。头条号已进入受保护草稿验收，网易仍为草稿流程模拟，小红书尚未接入；官网与原百家号流程不变。</p>
       <fieldset disabled={busy || checking} className="platforms">{platforms.map(p => <label className="check" key={p.id}><input type="checkbox" checked={selected.includes(p.id)} onChange={() => setSelected(prev => prev.includes(p.id) ? prev.filter(id => id !== p.id) : [...prev, p.id])}/><span>{p.name}<small>{p.isAuthenticated ? `已登录：${p.username || '请核对账号'}` : '请检查登录'}</small></span><a href={p.homepage} target="_blank" rel="noreferrer">后台</a></label>)}</fieldset>
       <button className="secondary" disabled={!selected.length || checking || busy} onClick={checkLogin}>{checking ? '检查中…' : '检查所选平台登录状态'}</button>
       <button disabled={busy || checking || loading || !article || !!article.missing.length || !title.trim() || !selected.length || selected.some(id => !platforms.find(p => p.id === id)?.isAuthenticated)} onClick={sync}>{busy ? '同步中，请勿关闭' : '确认并同步到草稿'}</button>

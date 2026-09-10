@@ -10,6 +10,8 @@ import { zhihuAdapter } from '../platforms/zhihu/index.mjs';
 import { ZhihuDraftService } from '../services/zhihu-draft-service.mjs';
 import { sohuAdapter } from '../platforms/sohu/index.mjs';
 import { SohuDraftService } from '../services/sohu-draft-service.mjs';
+import { toutiaoAdapter } from '../platforms/toutiao/index.mjs';
+import { ToutiaoDraftService } from '../services/toutiao-draft-service.mjs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -91,6 +93,19 @@ test('real action gate only permits explicitly confirmed Stage 4 Sohu saveDraft'
     { action: 'archiveMove', platform: 'sohu', authorization },
   ]) assert.equal(checkRealActionGate(input).allowed, false);
 });
+test('real action gate only permits explicitly confirmed Stage 5 Toutiao saveDraft', () => {
+  const authorization = { stage: '5-toutiao-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'toutiao', authorization }).allowed, true);
+  for (const input of [
+    { action: 'publish', platform: 'toutiao', authorization },
+    { action: 'upload', platform: 'toutiao', authorization },
+    { action: 'saveDraft', platform: 'zhihu', authorization },
+    { action: 'saveDraft', platform: 'sohu', authorization },
+    { action: 'saveDraft', platform: 'toutiao' },
+    { action: 'excelWrite', platform: 'toutiao', authorization },
+    { action: 'archiveMove', platform: 'toutiao', authorization },
+  ]) assert.equal(checkRealActionGate(input).allowed, false);
+});
 test('Zhihu service adapter always rejects public publish', async () => {
   const result = await zhihuAdapter.publish();
   assert.equal(result.allowed, false);
@@ -103,6 +118,61 @@ test('Sohu service adapter exposes guarded draft workflow and rejects public pub
   const result = await sohuAdapter.publish();
   assert.equal(result.allowed, false);
   assert.equal(result.published, false);
+});
+test('Toutiao service adapter exposes guarded draft workflow and rejects public publish', async () => {
+  assert.equal(toutiaoAdapter.workflow, 'guarded-draft');
+  assert.equal(toutiaoAdapter.capabilities.implementationAvailable, true);
+  assert.equal(toutiaoAdapter.capabilities.verified, false);
+  const result = await toutiaoAdapter.publish();
+  assert.equal(result.allowed, false);
+  assert.equal(result.published, false);
+});
+
+async function toutiaoFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage5-toutiao-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  current.source.relativePath = '主流平台/头条/测试';
+  const service = new ToutiaoDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', '头条', '测试'] }),
+  });
+  return { dir, store, service, change: () => { current = snapshot('e'.repeat(64)); current.source.relativePath = '主流平台/头条/测试'; } };
+}
+
+test('Toutiao draft task requires immutable snapshot and verified readback', async (t) => {
+  const f = await toutiaoFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(prepared.task.status, TASK_STATUS.READY);
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  for (const status of [TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT]) {
+    await f.service.progress({ taskId: prepared.task.taskId, status });
+  }
+  const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '13579', postUrl: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=edit&pgc_id=13579',
+  } });
+  assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(done.draftResult.readBackVerified, true);
+  assert.equal(done.states.publish.status, '未发布');
+  assert.equal(done.states.excel.status, '未登记');
+  assert.equal(done.states.archive.status, '未归档');
+});
+
+test('Toutiao draft task rejects untrusted URL and source mutation', async (t) => {
+  const bad = await toutiaoFixture(); t.after(() => fs.rm(bad.dir, { recursive: true, force: true }));
+  const one = await bad.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await bad.service.begin({ taskId: one.task.taskId, snapshotId: one.task.snapshotId, userConfirmed: true });
+  await assert.rejects(() => bad.service.complete({ taskId: one.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '13579', postUrl: 'https://example.com/profile_v4/graphic/publish?from=edit&pgc_id=13579',
+  } }), /URL 不受信任/);
+
+  const changed = await toutiaoFixture(); t.after(() => fs.rm(changed.dir, { recursive: true, force: true }));
+  const two = await changed.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  changed.change();
+  await assert.rejects(() => changed.service.begin({ taskId: two.task.taskId, snapshotId: two.task.snapshotId, userConfirmed: true }), /发生变化/);
+  assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
 });
 
 async function sohuFixture() {

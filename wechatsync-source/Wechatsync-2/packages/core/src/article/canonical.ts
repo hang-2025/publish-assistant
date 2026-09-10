@@ -72,6 +72,12 @@ export function parseCanonicalArticle(html: string, title = ''): CanonicalArticl
       for (const img of Array.from(element.querySelectorAll('img'))) pushImage(img)
       return
     }
+    // 头条号回读使用 div.pgc-img + p.pgc-img-caption 表示图片块。
+    // 将整个容器视为一个图片块，避免把可见图注误计为正文段落。
+    if (tag === 'div' && element.classList.contains('pgc-img')) {
+      for (const img of Array.from(element.querySelectorAll('img'))) pushImage(img)
+      return
+    }
     if (/^h[1-6]$/.test(tag)) {
       blocks.push({ kind: 'heading', level: Math.min(3, Number(tag[1])) as 1 | 2 | 3, text: normalize(element.textContent || ''), html: semanticHtml(element) }); anchor++; return
     }
@@ -110,7 +116,7 @@ export function assertCaptionPolicy(article: CanonicalArticle, maxLength = ZHIHU
   for (const image of article.images) {
     if (!image.alt) throw new Error(`第 ${image.order} 张图片缺少 HTML img.alt，不能生成可见图注`)
     if (Array.from(image.alt).length > maxLength) {
-      throw new Error(`第 ${image.order} 张图片的 HTML img.alt 超过当前知乎验收策略上限 ${maxLength} 字，已阻止保存；不会静默截断`)
+      throw new Error(`第 ${image.order} 张图片的 HTML img.alt 超过当前平台验收策略上限 ${maxLength} 字，已阻止保存；不会静默截断`)
     }
   }
 }
@@ -171,6 +177,7 @@ export function validateCanonicalFidelity(source: CanonicalArticle, readBackHtml
   const captions = Array.from(document.querySelectorAll('img')).map((img) => normalize(
     img.getAttribute('data-caption')
       || img.closest('figure')?.querySelector('figcaption')?.textContent
+      || img.closest('.pgc-img')?.querySelector('.pgc-img-caption')?.textContent
       || ''
   ))
   add(checks, 'image-count', source.images.length === actual.images.length, true, `源 ${source.images.length} / 回读 ${actual.images.length}`)

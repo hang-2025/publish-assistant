@@ -150,10 +150,12 @@ type MessageAction =
   | { type: 'TRIGGER_OPEN_EDITOR' }
   | { type: 'YIZAO_ZHIHU_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
   | { type: 'YIZAO_SOHU_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
+  | { type: 'YIZAO_TOUTIAO_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
 
 const GUARDED_DRAFT_RUNTIME = {
   zhihu: { name: '知乎', advance: 'advanceZhihuDraft', complete: 'completeZhihuDraft', fail: 'failZhihuDraft' },
   sohu: { name: '搜狐号', advance: 'advanceSohuDraft', complete: 'completeSohuDraft', fail: 'failSohuDraft' },
+  toutiao: { name: '头条号', advance: 'advanceToutiaoDraft', complete: 'completeToutiaoDraft', fail: 'failToutiaoDraft' },
 } as const
 
 async function runGuardedDraft(
@@ -262,6 +264,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'YIZAO_SOHU_DRAFT': {
       return runGuardedDraft('sohu', message.payload)
+    }
+
+    case 'YIZAO_TOUTIAO_DRAFT': {
+      return runGuardedDraft('toutiao', message.payload)
     }
 
     case 'SYNC_ARTICLE': {
