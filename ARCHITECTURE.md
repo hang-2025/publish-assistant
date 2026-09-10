@@ -63,7 +63,6 @@ saveDraft / publish / getStatus
 - `platforms/official`：用户界面统一显示为“官方网站”平台；内部保留 eyzao.com、eyzao.cn、yzfanglei.com 三个站点 Adapter，分别执行包↔站点绑定、栏目映射与站点锁校验，当前仍为发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
 - `platforms/zhihu`、`platforms/sohu`、`platforms/toutiao`、`platforms/netease`：受保护单篇草稿协调，各平台未完成人工验收前 `verified/saveDraft` 仍为 false。
-- `platforms/netease`：扩展本地草稿流程模拟的能力声明，不包含平台网络实现。
 - 小红书：`unsupported`，不得伪造草稿或发布成功。
 
 新增平台时应依次修改：
@@ -97,7 +96,7 @@ pending → validating → ready → running
 
 ## 6. 安全边界
 
-当前构建只有三个分别限定的真实动作例外：
+当前构建只有四个分别限定的真实动作例外：
 
 - 独立的真实上传命令仍禁止；仅知乎、搜狐号、头条号或网易号 `saveDraft` 内部所需图片上传随各自当次授权执行。
 - 当前仍然禁止最终公开发布。
