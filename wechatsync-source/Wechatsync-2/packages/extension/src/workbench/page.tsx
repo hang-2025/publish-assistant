@@ -1008,6 +1008,7 @@ export function Workbench() {
       })
       if (!prepared.started || !prepared.task) {
         if (prepared.reason === 'exists') throw new Error('相同文章与快照已有任务，已阻止重复保存')
+        if (prepared.reason === 'manual-review-required') throw new Error(`前次${platform.name}任务已进入保存阶段，结果可能已写入草稿箱；请先人工核对，已阻止重复保存`)
         if (prepared.reason === 'account-busy') throw new Error(`当前${platform.name}账号已有进行中任务`)
         throw new Error(prepared.reason || `未能创建${platform.name}草稿任务`)
       }

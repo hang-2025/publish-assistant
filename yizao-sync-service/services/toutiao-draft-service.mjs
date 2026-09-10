@@ -32,6 +32,12 @@ function assertSameSnapshot(task, current) {
   }
 }
 
+function canSafelyRetryBeforeSave(task) {
+  if (!task || task.status !== TASK_STATUS.FAILED || task.draftResult) return false;
+  const unsafeStages = new Set([TASK_STATUS.SAVING_DRAFT, TASK_STATUS.DRAFT_SAVED, TASK_STATUS.WAITING_CONFIRMATION]);
+  return Array.isArray(task.history) && !task.history.some((entry) => unsafeStages.has(entry?.stage));
+}
+
 function sanitizeFidelityReport(report) {
   if (!report || report.schema !== 'yizao-html-fidelity-report' || !report.summary || !Array.isArray(report.checks)) return null;
   const allowedStatuses = new Set(['PASS', 'DEGRADED', 'UNSUPPORTED', 'FAIL']);
@@ -94,7 +100,19 @@ export class ToutiaoDraftService {
     const context = await this.loadSnapshot(packageId);
     const { snapshot } = context;
     if (!snapshot.gate.executable) return { started: false, reason: 'snapshot-blocked', gate: snapshot.gate };
-    const taskKey = makeTaskKey({ packageId, platform: 'toutiao', accountId: ACCOUNT_ID, contentVersion: snapshot.source.contentVersion });
+    const baseTaskKey = makeTaskKey({ packageId, platform: 'toutiao', accountId: ACCOUNT_ID, contentVersion: snapshot.source.contentVersion });
+    const related = (await this.store.listTasks()).filter((task) => (
+      task.taskKey === baseTaskKey || String(task.taskKey || '').startsWith(`${baseTaskKey}:retry:`)
+    ));
+    const previous = related.at(-1) || null;
+    if (previous && !canSafelyRetryBeforeSave(previous)) {
+      return {
+        started: false,
+        reason: previous.status === TASK_STATUS.FAILED ? 'manual-review-required' : 'exists',
+        task: previous,
+      };
+    }
+    const taskKey = previous ? `${baseTaskKey}:retry:${related.length + 1}` : baseTaskKey;
     const created = await this.store.createTask({
       taskKey, packageId, rootName: context.rootName, relativePath: context.relativePath,
       platform: 'toutiao', platformName: '头条号', accountId: ACCOUNT_ID, accountLabel: '当前 Chrome 头条号会话',
@@ -102,6 +120,11 @@ export class ToutiaoDraftService {
       segments: context.segments, snapshotId: snapshot.snapshotId, snapshot: snapshotRecord(snapshot), mode: MODE,
     });
     if (!created.created) return { started: false, reason: created.reason, task: created.task, busy: created.busy };
+    if (previous) {
+      created.task.retryOfTaskId = previous.taskId;
+      created.task.retryReason = '前次失败发生在草稿保存请求之前；保留原审计记录后由用户重新确认重试';
+      await this.store.saveTask(created.task);
+    }
     await this.store.transitionStatus(created.task.taskId, TASK_STATUS.VALIDATING, '服务端复核发布包与不可变快照');
     const task = await this.store.transitionStatus(created.task.taskId, TASK_STATUS.READY, '快照已锁定，等待扩展检查当前头条号登录会话');
     return { started: true, task, gate: snapshot.gate };

@@ -248,6 +248,33 @@ test('Toutiao draft task rejects untrusted URL and source mutation', async (t) =
   assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
 });
 
+test('Toutiao draft task permits an explicit retry only when failure happened before save request', async (t) => {
+  const safe = await toutiaoFixture(); t.after(() => fs.rm(safe.dir, { recursive: true, force: true }));
+  const first = await safe.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await safe.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await safe.service.progress({ taskId: first.task.taskId, status: TASK_STATUS.UPLOADING });
+  await safe.service.fail({ taskId: first.task.taskId, error: '图片上传响应不兼容' });
+
+  const retry = await safe.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.notEqual(retry.task.taskId, first.task.taskId);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  assert.equal((await safe.store.getTask(first.task.taskId)).status, TASK_STATUS.FAILED, '旧失败记录必须保留');
+  const duplicate = await safe.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists', '新重试任务仍保持防双击幂等');
+
+  const uncertain = await toutiaoFixture(); t.after(() => fs.rm(uncertain.dir, { recursive: true, force: true }));
+  const saving = await uncertain.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await uncertain.service.begin({ taskId: saving.task.taskId, snapshotId: saving.task.snapshotId, userConfirmed: true });
+  for (const status of [TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT]) {
+    await uncertain.service.progress({ taskId: saving.task.taskId, status });
+  }
+  await uncertain.service.fail({ taskId: saving.task.taskId, error: '保存响应未知' });
+  const blocked = await uncertain.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(blocked.started, false);
+  assert.equal(blocked.reason, 'manual-review-required');
+});
+
 async function sohuFixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage4-sohu-'));
   const store = new TaskStore(path.join(dir, 'tasks'));
