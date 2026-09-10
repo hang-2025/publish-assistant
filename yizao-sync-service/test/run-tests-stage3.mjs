@@ -14,6 +14,8 @@ import { toutiaoAdapter } from '../platforms/toutiao/index.mjs';
 import { ToutiaoDraftService } from '../services/toutiao-draft-service.mjs';
 import { neteaseAdapter } from '../platforms/netease/index.mjs';
 import { NeteaseDraftService } from '../services/netease-draft-service.mjs';
+import { xiaohongshuAdapter } from '../platforms/xiaohongshu/index.mjs';
+import { XiaohongshuDraftService } from '../services/xiaohongshu-draft-service.mjs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -120,6 +122,18 @@ test('real action gate only permits explicitly confirmed Stage 6 NetEase saveDra
     { action: 'archiveMove', platform: 'netease', authorization },
   ]) assert.equal(checkRealActionGate(input).allowed, false);
 });
+test('real action gate only permits explicitly confirmed Stage 7 Xiaohongshu saveDraft', () => {
+  const authorization = { stage: '7-xiaohongshu-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'xiaohongshu', authorization }).allowed, true);
+  for (const input of [
+    { action: 'publish', platform: 'xiaohongshu', authorization },
+    { action: 'upload', platform: 'xiaohongshu', authorization },
+    { action: 'saveDraft', platform: 'netease', authorization },
+    { action: 'saveDraft', platform: 'xiaohongshu' },
+    { action: 'excelWrite', platform: 'xiaohongshu', authorization },
+    { action: 'archiveMove', platform: 'xiaohongshu', authorization },
+  ]) assert.equal(checkRealActionGate(input).allowed, false);
+});
 test('Zhihu service adapter always rejects public publish', async () => {
   const result = await zhihuAdapter.publish();
   assert.equal(result.allowed, false);
@@ -149,6 +163,48 @@ test('NetEase service adapter exposes guarded draft workflow and rejects public 
   const result = await neteaseAdapter.publish();
   assert.equal(result.allowed, false);
   assert.equal(result.published, false);
+});
+test('Xiaohongshu service adapter exposes guarded draft workflow and rejects public publish', async () => {
+  assert.equal(xiaohongshuAdapter.workflow, 'guarded-draft');
+  assert.equal(xiaohongshuAdapter.capabilities.implementationAvailable, true);
+  assert.equal(xiaohongshuAdapter.capabilities.verified, false);
+  assert.equal(xiaohongshuAdapter.capabilities.saveDraft, false);
+  const result = await xiaohongshuAdapter.publish();
+  assert.equal(result.allowed, false);
+  assert.equal(result.published, false);
+});
+
+async function xiaohongshuFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage7-xiaohongshu-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  current.source.relativePath = '主流平台/小红书/测试';
+  const service = new XiaohongshuDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', '小红书', '测试'] }),
+  });
+  return { dir, store, service };
+}
+
+test('Xiaohongshu draft task requires confirmation and verified IndexedDB readback', async (t) => {
+  const f = await xiaohongshuFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  await assert.rejects(f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: false }), /明确确认/);
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  for (const status of [TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT]) await f.service.progress({ taskId: prepared.task.taskId, status });
+  const checks = ['title', 'body-text', 'image-count', 'draft-indexeddb', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
+  const report = { schema: 'yizao-html-fidelity-report', version: 1, overall: 'DEGRADED', fidelityVerified: true,
+    summary: { pass: 7, degraded: 0, unsupported: 2, fail: 0 },
+    checks: [...checks.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
+      { key: 'image-order', status: 'UNSUPPORTED', required: false, detail: '人工检查' },
+      { key: 'image-anchor', status: 'UNSUPPORTED', required: false, detail: '平台不支持' }],
+  };
+  const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: report,
+    postId: 's:local-draft-key', postUrl: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image',
+  } });
+  assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(done.states.publish.status, '未发布');
 });
 
 async function neteaseFixture() {

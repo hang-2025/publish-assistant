@@ -37,7 +37,7 @@ node server.mjs
 | `getTasks` / `getTask` / `removeTask` | 查看/读取/清理纯模拟任务记录 |
 | `previewExcelRegistration` | 按已配置 Excel 路径做登记匹配只读预览；只读工作簿，不写单元格、不登记、不归档 |
 | `getCapabilities` | 返回平台能力矩阵：可模拟、草稿模拟、待适配、风险与验收状态 |
-| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅内部满足对应独立阶段、当次确认与快照复核的 `zhihu/sohu/toutiao/netease.saveDraft` 可放行 |
+| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅内部满足对应独立阶段、当次确认与快照复核的 `zhihu/sohu/toutiao/netease/xiaohongshu.saveDraft` 可放行 |
 | `preflightPackage` | 发布前总预演：汇总发送快照、Excel 匹配、归档目标和真实动作闸门；只读不执行 |
 | `generateRealExecutionChecklist` | 生成真实执行验收单和单篇小样本验收模板；只读返回 Markdown，不创建任务、不写文件、不上传、不发布、不登记、不归档 |
 | `getShareableConfigTemplate` / `importShareableConfigTemplate` | 导出/导入不含个人路径、令牌和扩展 ID 的团队规则 |
@@ -53,6 +53,7 @@ node server.mjs
 | `prepare/begin/advance/complete/failSohuDraft` | 搜狐号受保护草稿的同等五步握手；独立快照、确认、回读和失败记录 |
 | `prepare/begin/advance/complete/failToutiaoDraft` | 头条号受保护草稿的同等五步握手；独立快照、确认、回读和失败记录 |
 | `prepare/begin/advance/complete/failNeteaseDraft` | 网易号受保护草稿的同等五步握手；要求官方风控令牌、独立快照、确认、回读和失败记录 |
+| `prepare/begin/advance/complete/failXiaohongshuDraft` | 小红书受保护图文草稿的同等五步握手；要求独立快照、当次确认及创作中心 IndexedDB 标题/正文/图片数量回读 |
 
 任何其他命令（包括 publish/archive 等）都会被白名单拒绝。
 
@@ -74,7 +75,7 @@ node server.mjs
 - 令牌校验使用时间安全比较；
 - `getPackage` 只接受 `scan` 签发的包 ID（服务内存态，重启失效需重新扫描），不接受路径；
 - `previewExcelRegistration` / `preflightPackage` 同样只接受受控包 ID，并且只读取 `setConfig` 已保存的 `.xlsx` 文件；不接受任意 Excel 路径参数；
-- `checkRealActionGate` 默认返回 `allowed=false`；仅服务内部复核过的 `zhihu/sohu/toutiao/netease.saveDraft` 当次授权可例外放行；
+- `checkRealActionGate` 默认返回 `allowed=false`；仅服务内部复核过的 `zhihu/sohu/toutiao/netease/xiaohongshu.saveDraft` 当次授权可例外放行；
 - 所有文件访问经过 `resolveInside`：`fs.realpath` 解析 Windows junction/符号链接后复核仍位于授权根目录内；扫描不深入符号链接目录；
 - 请求体按 UTF-8 实际字节限制为 1MB。
 

@@ -1,14 +1,10 @@
-import { PlatformAdapter, UNSUPPORTED_CAPABILITIES } from './platform-adapter.mjs';
 import { officialAdapters } from './official/index.mjs';
 import { baijiahaoAdapter } from './baijiahao/index.mjs';
 import { zhihuAdapter } from './zhihu/index.mjs';
 import { sohuAdapter } from './sohu/index.mjs';
 import { neteaseAdapter } from './netease/index.mjs';
 import { toutiaoAdapter } from './toutiao/index.mjs';
-
-const unsupported = [
-  new PlatformAdapter({ id: 'xiaohongshu', name: '小红书', workflow: 'unsupported', capabilities: UNSUPPORTED_CAPABILITIES }),
-];
+import { xiaohongshuAdapter } from './xiaohongshu/index.mjs';
 
 export class PlatformRegistry {
   #adapters = new Map();
@@ -27,7 +23,7 @@ export class PlatformRegistry {
   list() { return [...this.#adapters.values()]; }
 }
 export const platformRegistry = new PlatformRegistry([
-  ...officialAdapters, baijiahaoAdapter, zhihuAdapter, sohuAdapter, toutiaoAdapter, neteaseAdapter, ...unsupported,
+  ...officialAdapters, baijiahaoAdapter, zhihuAdapter, sohuAdapter, toutiaoAdapter, neteaseAdapter, xiaohongshuAdapter,
 ]);
 
 export function platformArchitectureMetadata() {

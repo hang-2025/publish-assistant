@@ -24,6 +24,7 @@ import { ZhihuDraftService } from './zhihu-draft-service.mjs';
 import { SohuDraftService } from './sohu-draft-service.mjs';
 import { ToutiaoDraftService } from './toutiao-draft-service.mjs';
 import { NeteaseDraftService } from './netease-draft-service.mjs';
+import { XiaohongshuDraftService } from './xiaohongshu-draft-service.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { createLocalApiServer } from '../routes/local-api.mjs';
 import { platformRegistry } from '../platforms/registry.mjs';
@@ -55,6 +56,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *     · 阶段4 5 条：prepare/begin/advance/complete/failSohuDraft（仅搜狐号保存草稿）；
  *     · 阶段5 5 条：prepare/begin/advance/complete/failToutiaoDraft（仅头条号保存草稿）；
  *     · 阶段6 5 条：prepare/begin/advance/complete/failNeteaseDraft（仅网易号保存草稿）；
+ *     · 阶段7 5 条：prepare/begin/advance/complete/failXiaohongshuDraft（仅小红书保存草稿）；
  *   payload 用严格 schema（assertAllowedKeys），不接受任意路径/URL/命令名；
  * - getPackage / 发送快照只接受扫描时签发的受控 packageId，不接受任何路径；
  *   服务端用 realpath（解析 junction/符号链接）复核包与每张图片仍位于授权根目录之内。
@@ -63,7 +65,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  * - prepareOfficialTask 只生成不可变发送快照 + 执行预览，不创建任务、不启动执行器；
  * - simulateOfficialTask 走模拟状态机，推进到「等待用户最终提交（模拟）」，绝不自动发布；
  * - Excel 只读映射原型可通过已配置的登记表路径做匹配预览，但不写入任何单元格；
- * - checkRealActionGate 默认返回 allowed=false；仅内部经过当次确认及快照复核的知乎、搜狐号、头条号、网易号单篇 saveDraft 可放行；
+ * - checkRealActionGate 默认返回 allowed=false；仅内部经过当次确认及快照复核的知乎、搜狐号、头条号、网易号、小红书单篇 saveDraft 可放行；
  * - 公开发布、Excel 写入、文章归档等命令一概不提供。
  *
  * 审查返工（2026-09-04）新增的两条硬约束：
@@ -541,10 +543,25 @@ async function loadNeteaseDraftSnapshot(packageId) {
   return { ...context, snapshot };
 }
 
+async function loadXiaohongshuDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'xiaohongshu') {
+    throw new Error(`发布包与小红书不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
+
 const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
 const sohuDraftService = new SohuDraftService({ store, loadSnapshot: loadSohuDraftSnapshot });
 const toutiaoDraftService = new ToutiaoDraftService({ store, loadSnapshot: loadToutiaoDraftSnapshot });
 const neteaseDraftService = new NeteaseDraftService({ store, loadSnapshot: loadNeteaseDraftSnapshot });
+const xiaohongshuDraftService = new XiaohongshuDraftService({ store, loadSnapshot: loadXiaohongshuDraftSnapshot });
 
 async function cmdPrepareZhihuDraft(payload) {
   assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
@@ -666,6 +683,35 @@ async function cmdCompleteNeteaseDraft(payload) {
 async function cmdFailNeteaseDraft(payload) {
   assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
   return { mode: 'netease-draft', task: sanitizeTask(await neteaseDraftService.fail(payload || {})) };
+}
+
+async function cmdPrepareXiaohongshuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('xiaohongshu').createTask({
+    createDraftTask: () => xiaohongshuDraftService.prepare(payload || {}),
+  });
+  return { mode: 'xiaohongshu-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginXiaohongshuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('xiaohongshu').saveDraft({ saveDraft: () => xiaohongshuDraftService.begin(payload || {}) });
+  return { mode: 'xiaohongshu-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceXiaohongshuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'xiaohongshu-draft', task: sanitizeTask(await xiaohongshuDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteXiaohongshuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'xiaohongshu-draft', task: sanitizeTask(await xiaohongshuDraftService.complete(payload || {})) };
+}
+
+async function cmdFailXiaohongshuDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'xiaohongshu-draft', task: sanitizeTask(await xiaohongshuDraftService.fail(payload || {})) };
 }
 
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
@@ -1307,6 +1353,11 @@ const COMMANDS = {
   advanceNeteaseDraft: cmdAdvanceNeteaseDraft,
   completeNeteaseDraft: cmdCompleteNeteaseDraft,
   failNeteaseDraft: cmdFailNeteaseDraft,
+  prepareXiaohongshuDraft: cmdPrepareXiaohongshuDraft,
+  beginXiaohongshuDraft: cmdBeginXiaohongshuDraft,
+  advanceXiaohongshuDraft: cmdAdvanceXiaohongshuDraft,
+  completeXiaohongshuDraft: cmdCompleteXiaohongshuDraft,
+  failXiaohongshuDraft: cmdFailXiaohongshuDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 

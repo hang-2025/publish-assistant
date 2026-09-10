@@ -167,6 +167,13 @@ await makePackage(path.join(UNPUB, '主流平台', '网易', '智能防雷系统
   htmlImgs: ['1-img.png'],
   htmlAlts: ['网易测试 ALT'],
 });
+// 小红书夹具：Stage 7 只验证受保护任务握手与回读证据，不访问小红书网络。
+await makePackage(path.join(UNPUB, '主流平台', '小红书', '智能防雷系统', '2026-09-05', '小红书验收包M'), {
+  images: ['1-img.png'],
+  alts: ['小红书测试 ALT'],
+  htmlImgs: ['1-img.png'],
+  htmlAlts: ['小红书测试 ALT'],
+});
 // 官网 eyzao.cn 夹具：用于验证「同是官网包也不能串站点」，以及站点锁互斥（未被任务键占用）
 await makePackage(path.join(UNPUB, '官网', 'eyzao.cn', '易造新闻', '2026-09-02', '官网CN包H'), {
   images: ['1-img.png'],
@@ -1135,7 +1142,8 @@ test('1D HTTP：getCapabilities 展示能力；checkRealActionGate 默认拒绝�
   assert.equal(caps.status, 200, JSON.stringify(caps.json));
   assert.equal(caps.json.realActionsEnabled, false);
   assert.ok(caps.json.platforms.some((p) => p.id === 'zhihu' && p.status === 'guarded-draft-unverified'));
-  assert.ok(caps.json.platforms.some((p) => p.id === 'xiaohongshu' && p.status === 'not-adapted'));
+  assert.ok(caps.json.platforms.some((p) => p.id === 'xiaohongshu' && p.status === 'guarded-draft-unverified'
+    && p.realActionPolicy.saveDraft === 'stage7-explicit-confirmation-only'));
 
   for (const action of ['publish', 'excelWrite', 'archiveMove']) {
     const gate = await call({ command: 'checkRealActionGate', payload: { action, platform: 'eyzao.com' } });
@@ -1626,6 +1634,41 @@ test('Stage 6 HTTP：网易号草稿命令保持确认、平台绑定、快照�
         .map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
     },
     postId: 'doc_13579', postUrl: 'https://mp.163.com/subscribe_v4/index.html#/article-publish/doc_13579',
+  } } });
+  assert.equal(complete.json.task.status, 'waiting_confirmation');
+  assert.equal(complete.json.task.publish.status, '未发布');
+  assert.equal(complete.json.task.excel.status, '未登记');
+  assert.equal(complete.json.task.archive.status, '未归档');
+});
+
+test('Stage 7 HTTP：小红书草稿命令保持确认、平台绑定、快照与草稿库回读边界', async () => {
+  const pkg = scannedRef.map.get('小红书验收包M');
+  assert.ok(pkg);
+  const preflight = await call({ command: 'preflightPackage', payload: { packageId: pkg.packageId, platform: 'xiaohongshu' } });
+  assert.equal(preflight.status, 200, JSON.stringify(preflight.json));
+  assert.equal(preflight.json.snapshot.siteKey, 'xiaohongshu');
+  assert.equal(preflight.json.snapshot.gate.executable, true);
+  const denied = await call({ command: 'prepareXiaohongshuDraft', payload: { packageId: pkg.packageId, userConfirmed: false } });
+  assert.equal(denied.status, 422);
+  const prepared = await call({ command: 'prepareXiaohongshuDraft', payload: { packageId: pkg.packageId, userConfirmed: true } });
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.json));
+  const { taskId, snapshotId } = prepared.json.task;
+  const begin = await call({ command: 'beginXiaohongshuDraft', payload: { taskId, snapshotId, userConfirmed: true } });
+  assert.equal(begin.json.task.status, 'running');
+  for (const status of ['uploading', 'filling', 'saving_draft']) {
+    const progress = await call({ command: 'advanceXiaohongshuDraft', payload: { taskId, status } });
+    assert.equal(progress.json.task.status, status);
+  }
+  const required = ['title', 'body-text', 'image-count', 'draft-indexeddb', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
+  const complete = await call({ command: 'completeXiaohongshuDraft', payload: { taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    fidelityReport: { schema: 'yizao-html-fidelity-report', version: 1, overall: 'DEGRADED', fidelityVerified: true,
+      summary: { pass: 7, degraded: 0, unsupported: 2, fail: 0 },
+      checks: [...required.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
+        { key: 'image-order', status: 'UNSUPPORTED', required: false, detail: '人工检查' },
+        { key: 'image-anchor', status: 'UNSUPPORTED', required: false, detail: '平台不支持' }],
+    },
+    postId: 's:http-test-draft', postUrl: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image',
   } } });
   assert.equal(complete.json.task.status, 'waiting_confirmation');
   assert.equal(complete.json.task.publish.status, '未发布');

@@ -7,6 +7,7 @@ import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { SohuAdapter } from '../../core/src/adapters/platforms/sohu'
 import { ToutiaoAdapter } from '../../core/src/adapters/platforms/toutiao'
 import { NeteaseAdapter } from '../../core/src/adapters/platforms/netease'
+import { XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -25,6 +26,40 @@ const draftAuthorization = { action: 'saveDraft' as const, platform: 'zhihu' as 
 const sohuDraftAuthorization = { action: 'saveDraft' as const, platform: 'sohu' as const, taskId: 'tsk_12345678_cafebabe', snapshotId: 'snap-bbbbbbbbbbbbbbbbbbbbbbbb' }
 const toutiaoDraftAuthorization = { action: 'saveDraft' as const, platform: 'toutiao' as const, taskId: 'tsk_12345678_abcdef12', snapshotId: 'snap-cccccccccccccccccccccccc' }
 const neteaseDraftAuthorization = { action: 'saveDraft' as const, platform: 'netease' as const, taskId: 'tsk_12345678_1234abcd', snapshotId: 'snap-dddddddddddddddddddddddd' }
+const xiaohongshuDraftAuthorization = { action: 'saveDraft' as const, platform: 'xiaohongshu' as const, taskId: 'tsk_12345678_9876abcd', snapshotId: 'snap-eeeeeeeeeeeeeeeeeeeeeeee' }
+
+function xiaohongshuRuntime(pageResult: any) {
+  const executeScript = vi.fn().mockResolvedValueOnce({ ok: true, authenticated: true }).mockResolvedValueOnce(pageResult)
+  return {
+    type: 'extension', fetch: vi.fn(),
+    cookies: { get: vi.fn(), set: vi.fn(), remove: vi.fn() }, storage: { get: vi.fn(), set: vi.fn(), remove: vi.fn() }, session: { get: vi.fn(), set: vi.fn() },
+    dom: { parseHTML: vi.fn(), querySelector: vi.fn(), querySelectorAll: vi.fn(), getTextContent: vi.fn(), getInnerHTML: vi.fn() },
+    tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(), executeScript },
+  } as any
+}
+
+describe('guarded Xiaohongshu draft adapter', () => {
+  it('rejects public publish and taskless saveDraft', async () => {
+    const adapter = new XiaohongshuAdapter()
+    await adapter.init(xiaohongshuRuntime({ ok: false }))
+    await expect(adapter.publish({ title: '测试', html: '<p>正文</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    expect((await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })).success).toBe(false)
+  })
+
+  it('only succeeds after the creator draft database readback matches', async () => {
+    const stages: string[] = []
+    const adapter = new XiaohongshuAdapter()
+    await adapter.init(xiaohongshuRuntime({ ok: true, draftId: 's:local-key', title: '测试', body: '正文\n\n图片1：现场图', imageCount: 1 }))
+    expect((await adapter.checkAuth()).isAuthenticated).toBe(true)
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="现场图">', markdown: '' }, {
+      draftOnly: true, draftAuthorization: xiaohongshuDraftAuthorization, onDraftStage: (stage) => stages.push(stage),
+    })
+    expect(result.success).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+    expect(result.fidelityReport?.checks.find((item) => item.key === 'draft-only')?.status).toBe('PASS')
+    expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+})
 
 function zhihuRuntime(fetchImpl: (url: string, options?: RequestInit) => Promise<Response>) {
   return {
@@ -371,9 +406,9 @@ describe('Stage 3 acceptance safety', () => {
   const compatibleHealth = {
     ok: true,
     name: 'yizao-sync-service',
-    version: '0.5.0-stage6-netease-draft',
+    version: '0.6.0-stage7-xiaohongshu-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 35, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 36, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -395,7 +430,7 @@ describe('Stage 3 acceptance safety', () => {
     const evidence = buildAcceptanceEvidence({
       timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
       protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
-      extensionVersion: '2.0.9.8', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      extensionVersion: '2.0.9.9', articleId: 'pkg-safe', packageId: 'pkg-safe',
       snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
       taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
       draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
