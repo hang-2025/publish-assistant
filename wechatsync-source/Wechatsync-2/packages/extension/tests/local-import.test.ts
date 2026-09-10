@@ -6,6 +6,7 @@ import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { SohuAdapter } from '../../core/src/adapters/platforms/sohu'
 import { ToutiaoAdapter } from '../../core/src/adapters/platforms/toutiao'
+import { NeteaseAdapter } from '../../core/src/adapters/platforms/netease'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -23,6 +24,7 @@ const png = () => file('中文 图.png', new Uint8Array([137,80,78,71]), '发布
 const draftAuthorization = { action: 'saveDraft' as const, platform: 'zhihu' as const, taskId: 'tsk_12345678_deadbeef', snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa' }
 const sohuDraftAuthorization = { action: 'saveDraft' as const, platform: 'sohu' as const, taskId: 'tsk_12345678_cafebabe', snapshotId: 'snap-bbbbbbbbbbbbbbbbbbbbbbbb' }
 const toutiaoDraftAuthorization = { action: 'saveDraft' as const, platform: 'toutiao' as const, taskId: 'tsk_12345678_abcdef12', snapshotId: 'snap-cccccccccccccccccccccccc' }
+const neteaseDraftAuthorization = { action: 'saveDraft' as const, platform: 'netease' as const, taskId: 'tsk_12345678_1234abcd', snapshotId: 'snap-dddddddddddddddddddddddd' }
 
 function zhihuRuntime(fetchImpl: (url: string, options?: RequestInit) => Promise<Response>) {
   return {
@@ -231,13 +233,91 @@ describe('guarded Toutiao draft adapter', () => {
   })
 })
 
+describe('guarded NetEase draft adapter', () => {
+  it('rejects public publish and taskless saveDraft before touching the platform', async () => {
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 200 }))
+    runtime.tabs = { query: vi.fn(), create: vi.fn(), waitForLoad: vi.fn(), executeScript: vi.fn() }
+    await adapter.init(runtime)
+    await expect(adapter.publish({ title: 'x', html: '<p>x</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    const result = await adapter.saveDraft({ title: '网易测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('任务/快照授权')
+    expect(runtime.tabs.executeScript).not.toHaveBeenCalled()
+  })
+
+  it('uses only operation=saveDraft, keeps image captions and requires guarded readback', async () => {
+    const stages: string[] = []
+    let savedForm: Record<string, string> = {}
+    let savedContent = ''
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17, url: 'https://mp.163.com/subscribe_v4/index.html#/article-publish' }]),
+      create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.guardian) return { ok: true, status: 200, text: JSON.stringify({ code: 200, token: 'official-guardian-token' }) }
+        if (request.url === '/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88', mediaName: '网易验收号' } }) }
+        if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { url: '//dingyue.ws.126.net/test.jpg' } }) }
+        if (request.url === '/article/status/api/publishV2.do') {
+          savedForm = request.form
+          savedContent = request.form.content
+          return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: 'docId=doc_13579&pkId=9' }) }
+        }
+        if (request.url.startsWith('/article/editpage.do')) return {
+          ok: true, status: 200,
+          text: JSON.stringify({ code: 1, data: { post: { docid: 'doc_13579', title: '网易测试', content: savedContent } } }),
+        }
+        return { ok: false, status: 404, text: '{}' }
+      }),
+    }
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({
+      title: '网易测试',
+      html: '<p>前文</p><img src="data:image/png;base64,iVBORw==" alt="网易图片说明"><p><strong>后文</strong></p>',
+      markdown: '',
+    }, { draftOnly: true, draftAuthorization: neteaseDraftAuthorization, onDraftStage: (stage) => stages.push(stage) })
+
+    expect(result.success).toBe(true)
+    expect(result.draftOnly).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+    expect(result.fidelityVerified).toBe(true)
+    expect(result.postUrl).toBe('https://mp.163.com/subscribe_v4/index.html#/article-publish/doc_13579')
+    expect(savedForm.operation).toBe('saveDraft')
+    expect(Object.values(savedForm)).not.toContain('publish')
+    expect(savedForm.ursToken).toBe('official-guardian-token')
+    expect(savedContent).toContain('<br>网易图片说明</p>')
+    expect(savedContent).toContain('https://dingyue.ws.126.net/test.jpg')
+    expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('stops before saving when the official guardian token is unavailable', async () => {
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.url === '/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88' } }) }
+        if (request.guardian) return { ok: false, status: 0, text: '{}' }
+        throw new Error('save endpoint must not be called')
+      }),
+    }
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({ title: '网易测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: neteaseDraftAuthorization })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('风控令牌不可用')
+  })
+})
+
 describe('Stage 3 acceptance safety', () => {
   const compatibleHealth = {
     ok: true,
     name: 'yizao-sync-service',
-    version: '0.4.0-stage5-toutiao-draft',
+    version: '0.5.0-stage6-netease-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 34, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 35, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -259,7 +339,7 @@ describe('Stage 3 acceptance safety', () => {
     const evidence = buildAcceptanceEvidence({
       timestamp: '2026-09-08T00:00:00.000Z', serviceVersion: compatibleHealth.version,
       protocolName: compatibleHealth.protocol.name, protocolVersion: compatibleHealth.protocol.version,
-      extensionVersion: '2.0.9.7', articleId: 'pkg-safe', packageId: 'pkg-safe',
+      extensionVersion: '2.0.9.8', articleId: 'pkg-safe', packageId: 'pkg-safe',
       snapshotId: 'snap-aaaaaaaaaaaaaaaaaaaaaaaa', contentHash: 'b'.repeat(64), imageCount: 1,
       taskId: 'tsk_12345678_deadbeef', postId: '12345', draftUrl: 'https://zhuanlan.zhihu.com/p/12345/edit',
       draftOnly: true, readBackVerified: true, finalTaskStatus: 'waiting_confirmation',
@@ -340,6 +420,15 @@ describe('canonical publishing HTML fidelity', () => {
     const source = parseCanonicalArticle('<p>前文</p><img src="x" alt="头条图注"><p>后文</p>', '头条测试')
     const readBack = '<p>前文</p><div class="pgc-img"><img src="https://p1.toutiaoimg.com/origin/x" alt="头条图注"><p class="pgc-img-caption">头条图注</p></div><p>后文</p>'
     const report = validateCanonicalFidelity(source, readBack, '头条测试')
+    expect(report.fidelityVerified).toBe(true)
+    expect(report.checks.find((check) => check.key === 'image-anchor')?.status).toBe('PASS')
+    expect(report.checks.find((check) => check.key === 'caption-equals-html-alt')?.status).toBe('PASS')
+  })
+
+  it('recognizes NetEase image paragraphs and visible descriptions on readback', () => {
+    const source = parseCanonicalArticle('<p>前文</p><img src="x" alt="网易图注"><p>后文</p>', '网易测试')
+    const readBack = '<p>前文</p><p style="text-align:center"><img src="https://dingyue.ws.126.net/x.jpg" alt="网易图注"><br>网易图注</p><p>后文</p>'
+    const report = validateCanonicalFidelity(source, readBack, '网易测试')
     expect(report.fidelityVerified).toBe(true)
     expect(report.checks.find((check) => check.key === 'image-anchor')?.status).toBe('PASS')
     expect(report.checks.find((check) => check.key === 'caption-equals-html-alt')?.status).toBe('PASS')

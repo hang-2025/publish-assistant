@@ -183,13 +183,13 @@ const checklist = {
 }
 
 const capabilities = {
-  phase: '5-toutiao-draft-unverified',
+  phase: '6-netease-draft-unverified',
   realActionsEnabled: false,
   runtime: {
-    serviceVersion: '0.4.0-stage5-toutiao-draft',
+    serviceVersion: '0.5.0-stage6-netease-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    acceptanceBuildId: 'stage5-toutiao-draft-v3.4',
-    requiredExtensionBuildId: 'stage5-toutiao-draft-v3.4',
+    acceptanceBuildId: 'stage6-netease-draft-v3.5',
+    requiredExtensionBuildId: 'stage6-netease-draft-v3.5',
   },
   actions: {
     upload: '真实上传/保存草稿',
@@ -206,7 +206,7 @@ const capabilities = {
     { id: 'zhihu', name: '知乎', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
     { id: 'sohu', name: '搜狐号', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
     { id: 'toutiao', name: '头条号', group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
-    { id: 'netease', name: '网易号', aliases: ['网易', '网易号'], group: '主流平台', status: 'draft-simulation', workflow: 'draft-simulation', currentActions: ['只读扫描', '扩展本地草稿流程模拟'], plannedActions: ['小样本草稿验收'], evidence: ['仅本地模拟'], risks: ['不得显示草稿或发布成功'] },
+    { id: 'netease', name: '网易号', aliases: ['网易', '网易号'], group: '主流平台', status: 'guarded-draft-unverified', workflow: 'guarded-draft', currentActions: ['只读扫描', '受保护单篇草稿'], plannedActions: ['真实验收'], evidence: ['自动测试'], risks: ['真实账号未验收'] },
     { id: 'xiaohongshu', name: '小红书', group: '待适配平台', status: 'not-adapted', currentActions: ['只读扫描'], plannedActions: ['小样本草稿验收'], evidence: ['当前开发副本未验证'], risks: ['不得显示发布成功'] },
   ],
 }
@@ -244,7 +244,7 @@ try {
   })
   await page.route('http://127.0.0.1:8788/**', async (route) => {
     const req = route.request()
-    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.4.0-stage5-toutiao-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 34, id: 'stage5-toutiao-draft-v3.4', extensionBuildId: 'stage5-toutiao-draft-v3.4' } } })
+    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.5.0-stage6-netease-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 35, id: 'stage6-netease-draft-v3.5', extensionBuildId: 'stage6-netease-draft-v3.5' } } })
     const message = req.postDataJSON()
     if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' }, archive: { configured: true, resolved: 'C:\\模拟目录\\已归档' } }, excel: { configured: true, resolved: 'C:\\模拟目录\\计划表\\阶段1C模拟登记表.xlsx', sheetName: '9月执行计划' }, mappings: { platformValues: { 'eyzao.com': ['官网', 'eyzao.com', 'www.eyzao.com'], baijiahao: ['百家号', 'baijiahao'], zhihu: ['知乎', 'zhihu'], sohu: ['搜狐', '搜狐号', 'sohu'] } }, captionPolicy: { official: 'keep-existing-only', baijiahao: 'keep-existing-only', draft: 'use-existing-alt-after-preview' } } })
     if (message.command === 'scan') return route.fulfill({ json: { ok: true, packages } })
@@ -339,8 +339,8 @@ try {
   assert.equal(await page.locator('.pkg').count(), 3, '官方网站平台应包含三个站点的文章')
   assert.equal(await page.locator('.site-tag').count(), 3, '每篇官网文章必须保留目标站点标识')
   await page.getByRole('button', { name: '清除筛选' }).click()
-  assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 3, '知乎/搜狐/头条 = 受保护单篇草稿')
-  assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 1, '网易 = 草稿流程预览')
+  assert.equal(await page.locator('.pkg[data-cap="guarded-draft"]').count(), 4, '知乎/搜狐/头条/网易 = 受保护单篇草稿')
+  assert.equal(await page.locator('.pkg[data-cap="draft-preview"]').count(), 0, '网易不再使用草稿流程预览')
   assert.equal(await page.locator('.pkg[data-cap="not-ready"]').count(), 0, '当前截图夹具不含小红书待适配包')
   await page.getByLabel('平台筛选').selectOption({ label: '知乎' })
   assert.equal(await page.locator('.pkg').count(), 1, '选择知乎后只显示知乎文章')
@@ -354,8 +354,8 @@ try {
   await page.getByText('真实动作未启用').waitFor()
   assert.equal(await page.locator('.cap-card[data-status="simulation-ready"]').count(), 2, '官方网站聚合卡与百家号可做模拟')
   assert.equal(await page.locator('.cap-card').filter({ hasText: '3 个站点：eyzao.com、eyzao.cn、yzfanglei.com' }).count(), 1, '平台页应把三个官网显示为一个平台')
-  assert.equal(await page.locator('.cap-card[data-status="guarded-draft-unverified"]').count(), 3, '知乎/搜狐/头条为受保护草稿')
-  assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 1, '网易仍为草稿流程模拟')
+  assert.equal(await page.locator('.cap-card[data-status="guarded-draft-unverified"]').count(), 4, '知乎/搜狐/头条/网易为受保护草稿')
+  assert.equal(await page.locator('.cap-card[data-status="draft-simulation"]').count(), 0, '没有平台继续使用草稿流程模拟')
   assert.equal(await page.locator('.cap-card[data-status="not-adapted"]').count(), 1, '小红书仍待适配')
   await shot('workbench-1d-platform-capabilities.png')
 

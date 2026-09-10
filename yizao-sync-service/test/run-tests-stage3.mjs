@@ -12,6 +12,8 @@ import { sohuAdapter } from '../platforms/sohu/index.mjs';
 import { SohuDraftService } from '../services/sohu-draft-service.mjs';
 import { toutiaoAdapter } from '../platforms/toutiao/index.mjs';
 import { ToutiaoDraftService } from '../services/toutiao-draft-service.mjs';
+import { neteaseAdapter } from '../platforms/netease/index.mjs';
+import { NeteaseDraftService } from '../services/netease-draft-service.mjs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +108,18 @@ test('real action gate only permits explicitly confirmed Stage 5 Toutiao saveDra
     { action: 'archiveMove', platform: 'toutiao', authorization },
   ]) assert.equal(checkRealActionGate(input).allowed, false);
 });
+test('real action gate only permits explicitly confirmed Stage 6 NetEase saveDraft', () => {
+  const authorization = { stage: '6-netease-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'netease', authorization }).allowed, true);
+  for (const input of [
+    { action: 'publish', platform: 'netease', authorization },
+    { action: 'upload', platform: 'netease', authorization },
+    { action: 'saveDraft', platform: 'toutiao', authorization },
+    { action: 'saveDraft', platform: 'netease' },
+    { action: 'excelWrite', platform: 'netease', authorization },
+    { action: 'archiveMove', platform: 'netease', authorization },
+  ]) assert.equal(checkRealActionGate(input).allowed, false);
+});
 test('Zhihu service adapter always rejects public publish', async () => {
   const result = await zhihuAdapter.publish();
   assert.equal(result.allowed, false);
@@ -126,6 +140,65 @@ test('Toutiao service adapter exposes guarded draft workflow and rejects public 
   const result = await toutiaoAdapter.publish();
   assert.equal(result.allowed, false);
   assert.equal(result.published, false);
+});
+test('NetEase service adapter exposes guarded draft workflow and rejects public publish', async () => {
+  assert.equal(neteaseAdapter.workflow, 'guarded-draft');
+  assert.equal(neteaseAdapter.capabilities.implementationAvailable, true);
+  assert.equal(neteaseAdapter.capabilities.verified, false);
+  assert.equal(neteaseAdapter.capabilities.saveDraft, false);
+  const result = await neteaseAdapter.publish();
+  assert.equal(result.allowed, false);
+  assert.equal(result.published, false);
+});
+
+async function neteaseFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage6-netease-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  current.source.relativePath = '主流平台/网易/测试';
+  const service = new NeteaseDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', '网易', '测试'] }),
+  });
+  return { dir, store, service, change: () => { current = snapshot('f'.repeat(64)); current.source.relativePath = '主流平台/网易/测试'; } };
+}
+
+test('NetEase draft task requires immutable snapshot, guardian check and verified readback', async (t) => {
+  const f = await neteaseFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(prepared.task.status, TASK_STATUS.READY);
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  for (const status of [TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT]) await f.service.progress({ taskId: prepared.task.taskId, status });
+  const report = fidelityReport();
+  report.checks.push({ key: 'guardian-token', status: 'PASS', required: true, detail: '官方风控通过' });
+  report.summary.pass += 1;
+  const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: report,
+    postId: 'doc_13579', postUrl: 'https://mp.163.com/subscribe_v4/index.html#/article-publish/doc_13579',
+  } });
+  assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(done.draftResult.readBackVerified, true);
+  assert.equal(done.states.publish.status, '未发布');
+  assert.equal(done.states.excel.status, '未登记');
+  assert.equal(done.states.archive.status, '未归档');
+});
+
+test('NetEase draft task rejects untrusted URL and source mutation', async (t) => {
+  const bad = await neteaseFixture(); t.after(() => fs.rm(bad.dir, { recursive: true, force: true }));
+  const one = await bad.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await bad.service.begin({ taskId: one.task.taskId, snapshotId: one.task.snapshotId, userConfirmed: true });
+  const report = fidelityReport();
+  report.checks.push({ key: 'guardian-token', status: 'PASS', required: true, detail: '官方风控通过' });
+  await assert.rejects(() => bad.service.complete({ taskId: one.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: report,
+    postId: 'doc_13579', postUrl: 'https://example.com/subscribe_v4/index.html#/article-publish/doc_13579',
+  } }), /URL 不受信任/);
+
+  const changed = await neteaseFixture(); t.after(() => fs.rm(changed.dir, { recursive: true, force: true }));
+  const two = await changed.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  changed.change();
+  await assert.rejects(() => changed.service.begin({ taskId: two.task.taskId, snapshotId: two.task.snapshotId, userConfirmed: true }), /发生变化/);
+  assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
 });
 
 async function toutiaoFixture() {

@@ -160,6 +160,13 @@ await makePackage(path.join(UNPUB, '主流平台', '头条', '智能防雷系统
   htmlImgs: ['1-img.png'],
   htmlAlts: ['头条测试 ALT'],
 });
+// 网易号夹具：Stage 6 只验证受保护任务握手与回读证据，不访问网易网络。
+await makePackage(path.join(UNPUB, '主流平台', '网易', '智能防雷系统', '2026-09-04', '网易验收包L'), {
+  images: ['1-img.png'],
+  alts: ['网易测试 ALT'],
+  htmlImgs: ['1-img.png'],
+  htmlAlts: ['网易测试 ALT'],
+});
 // 官网 eyzao.cn 夹具：用于验证「同是官网包也不能串站点」，以及站点锁互斥（未被任务键占用）
 await makePackage(path.join(UNPUB, '官网', 'eyzao.cn', '易造新闻', '2026-09-02', '官网CN包H'), {
   images: ['1-img.png'],
@@ -926,7 +933,7 @@ test('1D 能力矩阵与真实动作闸门：默认拒绝，仅独立受保护�
   assert.equal(caps.realActionsEnabled, false);
   assert.ok(caps.platforms.some((p) => p.id === 'eyzao.com' && p.status === 'simulation-ready'));
   assert.ok(caps.platforms.some((p) => p.id === 'toutiao' && p.status === 'guarded-draft-unverified' && p.workflow === 'guarded-draft'));
-  assert.ok(caps.platforms.some((p) => p.id === 'netease' && p.status === 'draft-simulation' && p.workflow === 'draft-simulation'));
+  assert.ok(caps.platforms.some((p) => p.id === 'netease' && p.status === 'guarded-draft-unverified' && p.workflow === 'guarded-draft'));
   assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'netease' }).allowed, false);
   for (const action of ['upload', 'publish', 'excelWrite', 'archiveMove']) {
     const gate = checkRealActionGate({ action, platform: 'eyzao.com' });
@@ -1583,6 +1590,42 @@ test('Stage 5 HTTP：头条号草稿命令保持确认、平台绑定、快照�
         .map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
     },
     postId: '13579', postUrl: 'https://mp.toutiao.com/profile_v4/graphic/publish?from=edit&pgc_id=13579',
+  } } });
+  assert.equal(complete.json.task.status, 'waiting_confirmation');
+  assert.equal(complete.json.task.publish.status, '未发布');
+  assert.equal(complete.json.task.excel.status, '未登记');
+  assert.equal(complete.json.task.archive.status, '未归档');
+});
+
+test('Stage 6 HTTP：网易号草稿命令保持确认、平台绑定、快照、风控与回读证据边界', async () => {
+  const pkg = scannedRef.map.get('网易验收包L');
+  assert.ok(pkg);
+  const preflight = await call({ command: 'preflightPackage', payload: { packageId: pkg.packageId, platform: 'netease' } });
+  assert.equal(preflight.status, 200, JSON.stringify(preflight.json));
+  assert.equal(preflight.json.snapshot.siteKey, 'netease');
+  assert.equal(preflight.json.snapshot.gate.executable, true);
+
+  const denied = await call({ command: 'prepareNeteaseDraft', payload: { packageId: pkg.packageId, userConfirmed: false } });
+  assert.equal(denied.status, 422);
+  const prepared = await call({ command: 'prepareNeteaseDraft', payload: { packageId: pkg.packageId, userConfirmed: true } });
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.json));
+  assert.equal(prepared.json.task.status, 'ready');
+  const { taskId, snapshotId } = prepared.json.task;
+  const begin = await call({ command: 'beginNeteaseDraft', payload: { taskId, snapshotId, userConfirmed: true } });
+  assert.equal(begin.json.task.status, 'running');
+  for (const status of ['uploading', 'filling', 'saving_draft']) {
+    const progress = await call({ command: 'advanceNeteaseDraft', payload: { taskId, status } });
+    assert.equal(progress.json.task.status, status);
+  }
+  const complete = await call({ command: 'completeNeteaseDraft', payload: { taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    fidelityReport: {
+      schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+      summary: { pass: 13, degraded: 0, unsupported: 0, fail: 0 },
+      checks: ['title', 'main-block-order', 'inline-emphasis', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'trusted-draft-url', 'draft-only', 'read-back-verified', 'guardian-token']
+        .map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
+    },
+    postId: 'doc_13579', postUrl: 'https://mp.163.com/subscribe_v4/index.html#/article-publish/doc_13579',
   } } });
   assert.equal(complete.json.task.status, 'waiting_confirmation');
   assert.equal(complete.json.task.publish.status, '未发布');

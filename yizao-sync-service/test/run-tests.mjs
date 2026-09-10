@@ -232,7 +232,7 @@ test('平台 Registry：受保护草稿平台公开发布与未验收能力保�
   assert.equal(platformRegistry.get('知乎').capabilities.implementationAvailable, true);
   assert.equal(platformRegistry.get('头条号').workflow, 'guarded-draft');
   assert.equal(platformRegistry.get('toutiao').capabilities.implementationAvailable, true);
-  assert.equal(platformRegistry.get('网易').workflow, 'draft-simulation');
+  assert.equal(platformRegistry.get('网易').workflow, 'guarded-draft');
   assert.equal(platformRegistry.get('netease').capabilities.simulate, true);
   assert.equal((await platformRegistry.get('netease').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
@@ -356,8 +356,8 @@ test('health 无需令牌，返回版本', async () => {
   const json = await res.json();
   assert.equal(json.name, 'yizao-sync-service');
   assert.equal(json.protocol.version, 2);
-  assert.equal(json.build.packageVersion, 34);
-  assert.equal(json.build.id, 'stage5-toutiao-draft-v3.4');
+  assert.equal(json.build.packageVersion, 35);
+  assert.equal(json.build.id, 'stage6-netease-draft-v3.5');
 });
 
 test('命令接口：无 Origin / 网页 Origin / 错误 Host 一律拒绝', async () => {

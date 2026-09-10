@@ -1,7 +1,7 @@
-export const EXTENSION_BUILD_ID = 'stage5-toutiao-draft-v3.4'
-export const ACCEPTANCE_PACKAGE_VERSION = 34
-export const ACCEPTANCE_PACKAGE_LABEL = '3.4'
-export const EXPECTED_SERVICE_VERSION = '0.4.0-stage5-toutiao-draft'
+export const EXTENSION_BUILD_ID = 'stage6-netease-draft-v3.5'
+export const ACCEPTANCE_PACKAGE_VERSION = 35
+export const ACCEPTANCE_PACKAGE_LABEL = '3.5'
+export const EXPECTED_SERVICE_VERSION = '0.5.0-stage6-netease-draft'
 export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
 
 export interface ServiceHealth {
@@ -34,7 +34,7 @@ export function acceptanceChecksPassed(checks: Array<{ key: string; ok: boolean 
 }
 
 export interface AcceptanceEvidenceInput {
-  platform?: 'zhihu' | 'sohu' | 'toutiao'
+  platform?: 'zhihu' | 'sohu' | 'toutiao' | 'netease'
   timestamp: string
   serviceVersion: string
   protocolName: string

@@ -143,18 +143,18 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     id: 'netease',
     name: '网易号',
     group: '主流平台',
-    status: 'draft-simulation',
-    currentActions: ['只读扫描', '扩展本地草稿流程模拟'],
-    plannedActions: ['调研网易号编辑器', '用非敏感小样本验收保存草稿'],
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '受保护的单篇 HTML 保真草稿实现（待真实账号人工验收）'],
+    plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
     realActionPolicy: {
-      upload: 'not-supported',
-      saveDraft: 'not-supported',
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'stage6-explicit-confirmation-only',
       publish: 'not-supported',
       excelWrite: 'requires-explicit-authorization',
       archiveMove: 'requires-explicit-authorization',
     },
-    evidence: ['通用 Platform Adapter 与扩展本地模拟任务已接入；不包含平台网络实现'],
-    risks: ['网易号登录、编辑器结构、图片与正文保真均未做真实账号验收'],
+    evidence: ['网易号官方编辑器 saveDraft 语义、官方风控令牌与回读接口已核对；自动测试覆盖任务授权、图片图注、回读保真与公开发布拒绝'],
+    risks: ['尚未使用专用网易号测试账号确认风控、图片说明和语义块的实际保存行为，因此 verified/saveDraft 仍为 false'],
   },
   ...['xiaohongshu'].map((id) => ({
     id,
@@ -188,7 +188,7 @@ export const PLATFORM_CAPABILITIES = LEGACY_PLATFORM_CAPABILITIES.map((platform)
 export function getCapabilities() {
   return {
     version: 2,
-    phase: '5-toutiao-draft-unverified',
+    phase: '6-netease-draft-unverified',
     generatedAt: new Date().toISOString(),
     realActionsEnabled: false,
     runtime: {
@@ -224,7 +224,12 @@ export function checkRealActionGate({ action, platform, authorization } = {}) {
     && authorization?.stage === '5-toutiao-draft'
     && authorization?.userConfirmed === true
     && authorization?.snapshotVerified === true;
-  const guardedDraftAllowed = stage3DraftAllowed || stage4SohuDraftAllowed || stage5ToutiaoDraftAllowed;
+  const stage6NeteaseDraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'netease'
+    && authorization?.stage === '6-netease-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
+  const guardedDraftAllowed = stage3DraftAllowed || stage4SohuDraftAllowed || stage5ToutiaoDraftAllowed || stage6NeteaseDraftAllowed;
   return {
     allowed: guardedDraftAllowed,
     action: actionKey,
@@ -235,7 +240,7 @@ export function checkRealActionGate({ action, platform, authorization } = {}) {
     reason: guardedDraftAllowed
       ? `仅允许当前已确认且快照复核通过的单篇${platformInfo?.name || platformKey}保存草稿动作；不包含公开发布。`
       : knownAction
-      ? '真实动作默认关闭。仅独立验收阶段中经用户当次确认、快照复核通过的知乎、搜狐号或头条号 saveDraft 可获准。'
+      ? '真实动作默认关闭。仅独立验收阶段中经用户当次确认、快照复核通过的知乎、搜狐号、头条号或网易号 saveDraft 可获准。'
       : '未知真实动作不在允许清单中。',
     requirements: BASE_REQUIREMENTS,
   };

@@ -78,6 +78,12 @@ export function parseCanonicalArticle(html: string, title = ''): CanonicalArticl
       for (const img of Array.from(element.querySelectorAll('img'))) pushImage(img)
       return
     }
+    // 网易号编辑器把图片与可见说明保存为 p > img + br + text。
+    // 整体按一个图片块回读，避免把说明误算为正文段落而破坏锚点。
+    if (tag === 'p' && element.querySelector(':scope > img') && element.querySelector(':scope > br')) {
+      for (const img of Array.from(element.querySelectorAll(':scope > img'))) pushImage(img)
+      return
+    }
     if (/^h[1-6]$/.test(tag)) {
       blocks.push({ kind: 'heading', level: Math.min(3, Number(tag[1])) as 1 | 2 | 3, text: normalize(element.textContent || ''), html: semanticHtml(element) }); anchor++; return
     }
@@ -178,6 +184,9 @@ export function validateCanonicalFidelity(source: CanonicalArticle, readBackHtml
     img.getAttribute('data-caption')
       || img.closest('figure')?.querySelector('figcaption')?.textContent
       || img.closest('.pgc-img')?.querySelector('.pgc-img-caption')?.textContent
+      || (img.parentElement?.tagName.toLowerCase() === 'p' && img.parentElement.querySelector(':scope > br')
+        ? Array.from(img.parentElement.childNodes).slice(Array.from(img.parentElement.childNodes).findIndex((node) => node === img) + 1).map((node) => node.textContent || '').join(' ')
+        : '')
       || ''
   ))
   add(checks, 'image-count', source.images.length === actual.images.length, true, `源 ${source.images.length} / 回读 ${actual.images.length}`)

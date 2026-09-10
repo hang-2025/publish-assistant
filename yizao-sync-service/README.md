@@ -1,6 +1,6 @@
 # 易造发布助手 · 本地服务（受保护单篇草稿）
 
-保留阶段 1A~2J 的只读/模拟能力，并提供受保护的知乎、搜狐号、头条号单篇保存草稿协调。发布包 HTML 先经扩展的 Canonical Article 层解析，平台回读后只有必需的 Fidelity Report 检查全部 PASS，服务才接受 `draft_saved`。公开发布、独立真实上传、Excel 写入、文件移动/删除与真实归档仍没有命令；服务不会保存 Chrome Cookie/Profile，也不会修改文章或 Excel。
+保留阶段 1A~2J 的只读/模拟能力，并提供受保护的知乎、搜狐号、头条号、网易号单篇保存草稿协调。发布包 HTML 先经扩展的 Canonical Article 层解析，平台回读后只有必需的 Fidelity Report 检查全部 PASS，服务才接受 `draft_saved`。公开发布、独立真实上传、Excel 写入、文件移动/删除与真实归档仍没有命令；服务不会保存 Chrome Cookie/Profile，也不会修改文章或 Excel。
 
 ## 运行步骤
 
@@ -37,7 +37,7 @@ node server.mjs
 | `getTasks` / `getTask` / `removeTask` | 查看/读取/清理纯模拟任务记录 |
 | `previewExcelRegistration` | 按已配置 Excel 路径做登记匹配只读预览；只读工作簿，不写单元格、不登记、不归档 |
 | `getCapabilities` | 返回平台能力矩阵：可模拟、草稿模拟、待适配、风险与验收状态 |
-| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅内部满足对应独立阶段、当次确认与快照复核的 `zhihu/sohu/toutiao.saveDraft` 可放行 |
+| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅内部满足对应独立阶段、当次确认与快照复核的 `zhihu/sohu/toutiao/netease.saveDraft` 可放行 |
 | `preflightPackage` | 发布前总预演：汇总发送快照、Excel 匹配、归档目标和真实动作闸门；只读不执行 |
 | `generateRealExecutionChecklist` | 生成真实执行验收单和单篇小样本验收模板；只读返回 Markdown，不创建任务、不写文件、不上传、不发布、不登记、不归档 |
 | `getShareableConfigTemplate` / `importShareableConfigTemplate` | 导出/导入不含个人路径、令牌和扩展 ID 的团队规则 |
@@ -52,6 +52,7 @@ node server.mjs
 | `failZhihuDraft` | 持久记录失败；重启后不会自动重发 |
 | `prepare/begin/advance/complete/failSohuDraft` | 搜狐号受保护草稿的同等五步握手；独立快照、确认、回读和失败记录 |
 | `prepare/begin/advance/complete/failToutiaoDraft` | 头条号受保护草稿的同等五步握手；独立快照、确认、回读和失败记录 |
+| `prepare/begin/advance/complete/failNeteaseDraft` | 网易号受保护草稿的同等五步握手；要求官方风控令牌、独立快照、确认、回读和失败记录 |
 
 任何其他命令（包括 publish/archive 等）都会被白名单拒绝。
 
@@ -73,7 +74,7 @@ node server.mjs
 - 令牌校验使用时间安全比较；
 - `getPackage` 只接受 `scan` 签发的包 ID（服务内存态，重启失效需重新扫描），不接受路径；
 - `previewExcelRegistration` / `preflightPackage` 同样只接受受控包 ID，并且只读取 `setConfig` 已保存的 `.xlsx` 文件；不接受任意 Excel 路径参数；
-- `checkRealActionGate` 默认返回 `allowed=false`；仅服务内部复核过的 `zhihu/sohu/toutiao.saveDraft` 当次授权可例外放行；
+- `checkRealActionGate` 默认返回 `allowed=false`；仅服务内部复核过的 `zhihu/sohu/toutiao/netease.saveDraft` 当次授权可例外放行；
 - 所有文件访问经过 `resolveInside`：`fs.realpath` 解析 Windows junction/符号链接后复核仍位于授权根目录内；扫描不深入符号链接目录；
 - 请求体按 UTF-8 实际字节限制为 1MB。
 
@@ -91,4 +92,4 @@ npm test
 - 未实现 Excel 写入登记与真实归档（旧 `archive.mjs` 的破坏性操作未复制启用）；
 - 未做图片分块传输（当前 getPackage 整包返回，大图场景待后续阶段）；
 - 当前采用“首次持令牌配对时绑定扩展 ID”；正式分发时仍需确定固定扩展 ID、令牌轮换和解除配对的安装流程。
-- 知乎、搜狐号、头条号真实草稿实现均尚未用各自专用测试账号完成人工验收，所以能力表仍保持 `verified=false`、`saveDraft=false`；平台页面或接口变化仍可能导致实际验收失败。
+- 知乎、搜狐号、头条号、网易号真实草稿实现均尚未用各自专用测试账号完成人工验收，所以能力表仍保持 `verified=false`、`saveDraft=false`；平台页面或接口变化仍可能导致实际验收失败。

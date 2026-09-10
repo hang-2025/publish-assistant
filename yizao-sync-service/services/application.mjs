@@ -23,12 +23,13 @@ import { ArticleService } from './article-service.mjs';
 import { ZhihuDraftService } from './zhihu-draft-service.mjs';
 import { SohuDraftService } from './sohu-draft-service.mjs';
 import { ToutiaoDraftService } from './toutiao-draft-service.mjs';
+import { NeteaseDraftService } from './netease-draft-service.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { createLocalApiServer } from '../routes/local-api.mjs';
 import { platformRegistry } from '../platforms/registry.mjs';
 
 /**
- * 易造发布助手 · 本地服务（阶段 3：仅新增受保护的知乎单篇保存草稿；其他真实动作继续关闭）
+ * 易造发布助手 · 本地服务（受保护单篇草稿；其他真实动作继续关闭）
  *
  * 安全边界（对应审查要求二.1/2/3）：
  * - 只绑定 127.0.0.1；Host 必须是 127.0.0.1:PORT 或 localhost:PORT；
@@ -38,7 +39,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *   Authorization: Bearer <token>；令牌首次启动时生成，写入 data/token 文件并打印一次，
  *   由用户手工粘贴到插件工作台完成配对——任何匿名接口都不发放令牌，
  *   令牌不出现在 URL、查询参数和日志中；
- * - 命令走白名单（合计 30 条）：
+ * - 命令走严格白名单：
  *     · 阶段1A 4 条：getConfig / setConfig / scan / getPackage；
  *     · 阶段1B 5 条：prepareOfficialTask / simulateOfficialTask / getTasks / getTask / removeTask；
  *     · 阶段1C 1 条：previewExcelRegistration（只读登记匹配预览）；
@@ -53,6 +54,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  *     · 阶段3 5 条：prepare/begin/advance/complete/failZhihuDraft（仅知乎保存草稿）；
  *     · 阶段4 5 条：prepare/begin/advance/complete/failSohuDraft（仅搜狐号保存草稿）；
  *     · 阶段5 5 条：prepare/begin/advance/complete/failToutiaoDraft（仅头条号保存草稿）；
+ *     · 阶段6 5 条：prepare/begin/advance/complete/failNeteaseDraft（仅网易号保存草稿）；
  *   payload 用严格 schema（assertAllowedKeys），不接受任意路径/URL/命令名；
  * - getPackage / 发送快照只接受扫描时签发的受控 packageId，不接受任何路径；
  *   服务端用 realpath（解析 junction/符号链接）复核包与每张图片仍位于授权根目录之内。
@@ -61,7 +63,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  * - prepareOfficialTask 只生成不可变发送快照 + 执行预览，不创建任务、不启动执行器；
  * - simulateOfficialTask 走模拟状态机，推进到「等待用户最终提交（模拟）」，绝不自动发布；
  * - Excel 只读映射原型可通过已配置的登记表路径做匹配预览，但不写入任何单元格；
- * - checkRealActionGate 默认返回 allowed=false；仅内部经过当次确认及快照复核的 zhihu.saveDraft 可放行；
+ * - checkRealActionGate 默认返回 allowed=false；仅内部经过当次确认及快照复核的知乎、搜狐号、头条号、网易号单篇 saveDraft 可放行；
  * - 公开发布、Excel 写入、文章归档等命令一概不提供。
  *
  * 审查返工（2026-09-04）新增的两条硬约束：
@@ -97,6 +99,7 @@ const DEFAULT_PLATFORM_VALUES = {
   zhihu: ['zhihu', '知乎'],
   sohu: ['sohu', '搜狐', '搜狐号'],
   toutiao: ['toutiao', '头条', '头条号'],
+  netease: ['netease', '网易', '网易号'],
 };
 const DEFAULT_CAPTION_POLICY = {
   official: 'keep-existing-only',
@@ -524,9 +527,24 @@ async function loadToutiaoDraftSnapshot(packageId) {
   return { ...context, snapshot };
 }
 
+async function loadNeteaseDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'netease') {
+    throw new Error(`发布包与网易号不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
+
 const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
 const sohuDraftService = new SohuDraftService({ store, loadSnapshot: loadSohuDraftSnapshot });
 const toutiaoDraftService = new ToutiaoDraftService({ store, loadSnapshot: loadToutiaoDraftSnapshot });
+const neteaseDraftService = new NeteaseDraftService({ store, loadSnapshot: loadNeteaseDraftSnapshot });
 
 async function cmdPrepareZhihuDraft(payload) {
   assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
@@ -619,6 +637,35 @@ async function cmdCompleteToutiaoDraft(payload) {
 async function cmdFailToutiaoDraft(payload) {
   assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
   return { mode: 'toutiao-draft', task: sanitizeTask(await toutiaoDraftService.fail(payload || {})) };
+}
+
+async function cmdPrepareNeteaseDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('netease').createTask({
+    createDraftTask: () => neteaseDraftService.prepare(payload || {}),
+  });
+  return { mode: 'netease-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginNeteaseDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('netease').saveDraft({ saveDraft: () => neteaseDraftService.begin(payload || {}) });
+  return { mode: 'netease-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceNeteaseDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'netease-draft', task: sanitizeTask(await neteaseDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteNeteaseDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'netease-draft', task: sanitizeTask(await neteaseDraftService.complete(payload || {})) };
+}
+
+async function cmdFailNeteaseDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'netease-draft', task: sanitizeTask(await neteaseDraftService.fail(payload || {})) };
 }
 
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
@@ -1255,6 +1302,11 @@ const COMMANDS = {
   advanceToutiaoDraft: cmdAdvanceToutiaoDraft,
   completeToutiaoDraft: cmdCompleteToutiaoDraft,
   failToutiaoDraft: cmdFailToutiaoDraft,
+  prepareNeteaseDraft: cmdPrepareNeteaseDraft,
+  beginNeteaseDraft: cmdBeginNeteaseDraft,
+  advanceNeteaseDraft: cmdAdvanceNeteaseDraft,
+  completeNeteaseDraft: cmdCompleteNeteaseDraft,
+  failNeteaseDraft: cmdFailNeteaseDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 
@@ -1316,7 +1368,7 @@ export async function startApplication() {
     }
     console.log('白名单命令（35 条）：原有 20 条只读/模拟命令；知乎、搜狐号与头条号各新增 5 条受保护草稿握手命令。');
     console.log('包↔平台绑定：prepare/simulate 只允许把包发往其受控目录推导出的站点，不匹配直接拒绝。');
-    console.log('受保护草稿：仅知乎、搜狐号或头条号单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
+    console.log('受保护草稿：仅知乎、搜狐号、头条号或网易号单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
     console.log('不提供公开发布/Excel 写入登记/真实归档命令，不启动旧执行器，不修改文章与 Excel。');
     console.log('站点锁作用域：仅在新服务遵循同一文件锁协议的进程之间互斥，不覆盖未接入本协议的旧执行器。');
   });
