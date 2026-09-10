@@ -40,8 +40,15 @@ function normalizeImageUrl(value: string): string {
   return value
 }
 
-const IMAGE_URL_KEYS = ['url', 'image_url', 'imageUrl', 'download_url', 'downloadUrl', 'display_url', 'displayUrl', 'main_url', 'mainUrl']
-const IMAGE_URI_KEYS = ['web_uri', 'webUri', 'uri', 'origin_web_uri', 'originWebUri', 'tos_uri', 'tosUri']
+const IMAGE_URL_KEYS = [
+  'origin_image_url', 'originImageUrl', 'image_url', 'imageUrl', 'url',
+  'download_url', 'downloadUrl', 'display_url', 'displayUrl', 'main_url', 'mainUrl',
+]
+const IMAGE_URI_KEYS = [
+  'origin_image_uri', 'originImageUri', 'image_uri', 'imageUri',
+  'origin_web_uri', 'originWebUri', 'web_uri', 'webUri', 'tos_uri', 'tosUri', 'uri',
+]
+const TRUSTED_IMAGE_HOST = /(^|\.)(toutiaoimg\.com|toutiaocdn\.com|pstatp\.com|byteimg\.com)$/i
 
 function scalarString(value: unknown): string {
   if (typeof value === 'string') return value.trim()
@@ -84,15 +91,37 @@ function fieldFromObjects(objects: Record<string, unknown>[], keys: string[]): s
   return ''
 }
 
+function normalizeImageResourceUri(value: string): string {
+  const candidate = value.trim().replace(/^\/+/, '').split(/[?#]/)[0].split('~')[0]
+  if (!candidate || candidate.length > 1024 || /[\\\u0000-\u001f\u007f]/.test(candidate)) return ''
+  if (candidate.split('/').some((segment) => segment === '..')) return ''
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(candidate) ? candidate : ''
+}
+
+function trustedImageUrl(value: string): string {
+  const normalized = normalizeImageUrl(value)
+  try {
+    const parsed = new URL(normalized)
+    const trustedHost = TRUSTED_IMAGE_HOST.test(parsed.hostname) || parsed.hostname.toLowerCase() === 'image-tt-private.toutiao.com'
+    if (parsed.protocol !== 'https:' || !trustedHost || parsed.username || parsed.password) return ''
+    if (parsed.port && parsed.port !== '443') return ''
+    return parsed.toString()
+  } catch {
+    return ''
+  }
+}
+
 function deriveTrustedWebUri(url: string): string {
   try {
     const parsed = new URL(url)
-    if (!/(^|\.)(toutiaoimg\.com|toutiaocdn\.com|pstatp\.com|byteimg\.com)$/i.test(parsed.hostname)) return ''
+    const trustedHost = TRUSTED_IMAGE_HOST.test(parsed.hostname) || parsed.hostname.toLowerCase() === 'image-tt-private.toutiao.com'
+    if (parsed.protocol !== 'https:' || !trustedHost) return ''
     for (const key of IMAGE_URI_KEYS) {
       const queryValue = parsed.searchParams.get(key)
-      if (queryValue) return queryValue
+      const resourceUri = normalizeImageResourceUri(queryValue || '')
+      if (resourceUri) return resourceUri
     }
-    return decodeURIComponent(parsed.pathname.replace(/^\/+/, '').split('~')[0] || '')
+    return normalizeImageResourceUri(decodeURIComponent(parsed.pathname))
   } catch {
     return ''
   }
@@ -280,20 +309,23 @@ export class ToutiaoAdapter extends CodeAdapter {
     if (Number(envelope?.code) !== 0) throw new Error(String(envelope?.message || '头条号图片上传失败'))
     const data = envelope?.data ?? envelope?.result ?? envelope
     const objects = uploadResponseObjects(data)
-    const url = normalizeImageUrl(fieldFromObjects(objects, IMAGE_URL_KEYS))
-    const webUri = fieldFromObjects(objects, IMAGE_URI_KEYS) || deriveTrustedWebUri(url)
-    if (!/^https:\/\//.test(url) || !webUri) {
+    const rawUrl = fieldFromObjects(objects, IMAGE_URL_KEYS)
+    const responseUri = normalizeImageResourceUri(fieldFromObjects(objects, IMAGE_URI_KEYS))
+    const resourceUri = responseUri || normalizeImageResourceUri(rawUrl)
+    const url = trustedImageUrl(rawUrl) || (resourceUri ? `https://p1.toutiaoimg.com/origin/${resourceUri}` : '')
+    const webUri = resourceUri || deriveTrustedWebUri(url)
+    if (!url || !webUri) {
       throw new Error(`头条号图片上传响应缺少 URL 或 web_uri（响应字段：${imageUploadShape(data)}）`)
     }
-    const imageData = objects.find((object) => IMAGE_URL_KEYS.some((key) => scalarString(object[key]) === fieldFromObjects(objects, IMAGE_URL_KEYS))) || objects[0] || {}
+    const imageData = objects.find((object) => IMAGE_URL_KEYS.some((key) => scalarString(object[key]) === rawUrl)) || objects[0] || {}
     return {
       url,
       attrs: {
         web_uri: webUri,
         image_type: 1,
-        mime_type: String(imageData.mime_type || imageData.mimeType || 'image/jpeg'),
-        img_width: Number(imageData.width || imageData.img_width || imageData.imgWidth || 0),
-        img_height: Number(imageData.height || imageData.img_height || imageData.imgHeight || 0),
+        mime_type: String(imageData.mime_type || imageData.mimeType || imageData.image_mime_type || imageData.imageMimeType || 'image/jpeg'),
+        img_width: Number(imageData.width || imageData.img_width || imageData.imgWidth || imageData.image_width || imageData.imageWidth || 0),
+        img_height: Number(imageData.height || imageData.img_height || imageData.imgHeight || imageData.image_height || imageData.imageHeight || 0),
       },
     }
   }
