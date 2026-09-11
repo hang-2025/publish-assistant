@@ -18,13 +18,38 @@ import { TASK_STATUS, assertTaskStatusTransition } from '../domain/status.mjs';
 
 export const INTERMEDIATE = new Set(['校验中', '模拟填写后台', '模拟等待用户最终提交', '模拟提交草稿']);
 export const TERMINAL = new Set(['等待用户最终提交（模拟）', '模拟完成（未保存草稿）', '失败', '已核对已清除（模拟）']);
+const atomicWriteQueues = new Map();
+
+function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+async function writeJsonAtomicNow(file, obj) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(obj, null, 2), { encoding: 'utf8', flag: 'wx' });
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await fs.rename(tmp, file);
+        return;
+      } catch (error) {
+        const transient = ['EPERM', 'EACCES', 'EBUSY'].includes(error?.code);
+        if (!transient || attempt >= 5) throw error;
+        await wait(20 * (2 ** attempt));
+      }
+    }
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+  }
+}
 
 /** 原子写 JSON（Windows 上先写临时文件再 rename，避免半截文件）。 */
-export async function writeJsonAtomic(file, obj) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(obj, null, 2), 'utf8');
-  await fs.rename(tmp, file);
+export function writeJsonAtomic(file, obj) {
+  const previous = atomicWriteQueues.get(file) || Promise.resolve();
+  const current = previous.catch(() => {}).then(() => writeJsonAtomicNow(file, obj));
+  atomicWriteQueues.set(file, current);
+  return current.finally(() => {
+    if (atomicWriteQueues.get(file) === current) atomicWriteQueues.delete(file);
+  });
 }
 
 function stageTime() { return new Date().toISOString(); }

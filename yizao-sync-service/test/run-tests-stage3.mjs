@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { TaskStore } from '../lib/tasks.mjs';
+import { TaskStore, writeJsonAtomic } from '../lib/tasks.mjs';
 import { TASK_STATUS } from '../domain/status.mjs';
 import { checkRealActionGate } from '../lib/capabilities.mjs';
 import { zhihuAdapter } from '../platforms/zhihu/index.mjs';
@@ -61,6 +61,17 @@ function fidelityReport(overrides = {}) {
     ...overrides,
   };
 }
+
+test('Windows 任务 JSON 并发更新使用独立临时文件并保持完整', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-atomic-task-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'task.json');
+  await Promise.all(Array.from({ length: 20 }, (_, version) => writeJsonAtomic(file, { version, valid: true })));
+  const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(saved.valid, true);
+  assert.equal(saved.version, 19);
+  assert.deepEqual((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp')), []);
+});
 
 async function fixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage3-'));

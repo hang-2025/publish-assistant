@@ -54,6 +54,7 @@ export class XiaohongshuAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
     id: 'xiaohongshu', name: '小红书', icon: 'https://creator.xiaohongshu.com/favicon.ico', homepage: EDITOR_URL,
     capabilities: ['article', 'draft', 'image_upload'],
+    authCheckMode: 'interactive',
   }
   readonly preprocessConfig = {
     outputFormat: 'html' as const, removeIframes: true, removeComments: true,

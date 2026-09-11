@@ -84,6 +84,7 @@ export class NeteaseAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
     id: 'netease', name: '网易号', icon: 'https://mp.163.com/favicon.ico', homepage: EDITOR_URL,
     capabilities: ['article', 'draft', 'image_upload'],
+    authCheckMode: 'interactive',
   }
   readonly preprocessConfig = {
     outputFormat: 'html' as const, removeIframes: true, removeComments: true,

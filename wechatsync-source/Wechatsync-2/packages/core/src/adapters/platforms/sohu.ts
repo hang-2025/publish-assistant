@@ -37,7 +37,7 @@ export class SohuAdapter extends CodeAdapter {
     id: 'sohu',
     name: '搜狐号',
     icon: 'https://mp.sohu.com/favicon.ico',
-    homepage: 'https://mp.sohu.com/mpfe/v3/main/first/page?newsType=1',
+    homepage: 'https://mp.sohu.com/mpfe/v4/?newsType=1',
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
@@ -64,9 +64,10 @@ export class SohuAdapter extends CodeAdapter {
 
   async checkAuth(): Promise<AuthResult> {
     try {
-      // 使用 /account/list 获取所有子账号（搜狐号支持多个子账号）
+      // 搜狐号 v4 使用 /account/listV2，分组字段为 accountInfos。
+      // 同时保留旧 accounts 字段兼容，避免旧会话切换期间误判未登录。
       const response = await this.runtime.fetch(
-        `https://mp.sohu.com/mpbp/bp/account/list?_=${Date.now()}`,
+        `https://mp.sohu.com/mpbp/bp/account/listV2?_=${Date.now()}`,
         {
           method: 'GET',
           credentials: 'include',
@@ -77,23 +78,23 @@ export class SohuAdapter extends CodeAdapter {
         code: number
         data?: {
           data?: Array<{
-            accounts: SohuAccountInfo[]
+            accountInfos?: SohuAccountInfo[]
+            accounts?: SohuAccountInfo[]
           }>
         }
       }
 
       logger.debug('checkAuth response:', res)
 
-      if (res.code !== 2000000 || !res.data?.data?.[0]?.accounts?.length) {
+      if (Number(res.code) !== 2000000 || !Array.isArray(res.data?.data)) {
         return { isAuthenticated: false }
       }
 
       // 收集所有子账号
       const allAccounts: SohuAccountInfo[] = []
       for (const group of res.data.data) {
-        if (group.accounts) {
-          allAccounts.push(...group.accounts)
-        }
+        const accounts = group.accountInfos || group.accounts || []
+        if (Array.isArray(accounts)) allAccounts.push(...accounts)
       }
 
       if (allAccounts.length === 0) {

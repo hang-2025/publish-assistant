@@ -10,6 +10,7 @@ import {
 } from '@wechatsync/core'
 import { createExtensionRuntime } from '../runtime/extension'
 import { createLogger } from '../lib/logger'
+import { shouldAutoCheckPlatformAuth } from './auth-policy'
 import {
   trackSyncStart,
   trackPlatformSync,
@@ -293,6 +294,12 @@ export async function checkAllPlatformsAuth(forceRefresh = false) {
         isAuthenticated: cached.isAuthenticated,
         username: cached.username,
         error: cached.error,
+      })
+    } else if (!shouldAutoCheckPlatformAuth(meta)) {
+      results.push({
+        ...meta,
+        isAuthenticated: false,
+        error: '请先明确选择该平台，再检查当前 Chrome 登录状态',
       })
     } else {
       needsCheck.push(meta)

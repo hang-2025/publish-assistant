@@ -11,6 +11,7 @@ import { XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongsh
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
+import { shouldAutoCheckPlatformAuth } from '../src/adapters/auth-policy'
 const requireCore = createRequire(resolve(process.cwd(), '../core/package.json'))
 const JSZip = requireCore('jszip')
 
@@ -139,6 +140,21 @@ describe('guarded Zhihu draft adapter', () => {
 })
 
 describe('guarded Sohu draft adapter', () => {
+  it('recognizes the current v4 account list response', async () => {
+    const adapter = new SohuAdapter()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      code: 2000000,
+      data: { data: [{ accountInfos: [{ id: '88', nickName: '搜狐验收号', avatar: '' }] }], total: 1 },
+    }), { status: 200 }))
+    await adapter.init(zhihuRuntime(fetchMock))
+
+    const auth = await adapter.checkAuth()
+
+    expect(auth.isAuthenticated).toBe(true)
+    expect(auth.userId).toBe('88')
+    expect(fetchMock.mock.calls[0][0]).toContain('/account/listV2')
+  })
+
   it('rejects public publish and taskless saveDraft', async () => {
     const adapter = new SohuAdapter()
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
@@ -155,7 +171,7 @@ describe('guarded Sohu draft adapter', () => {
     let savedContent = ''
     const adapter = new SohuAdapter()
     await adapter.init(zhihuRuntime(async (url, options) => {
-      if (url.includes('/mpbp/bp/account/list')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accounts: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
+      if (url.includes('/mpbp/bp/account/listV2')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accountInfos: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
       if (url.includes('/news/v4/news/draft/v2') && options?.method === 'POST') {
         savedContent = JSON.parse(String(options.body)).content
         return new Response(JSON.stringify({ success: true, data: 24680 }), { status: 200 })
@@ -179,7 +195,7 @@ describe('guarded Sohu draft adapter', () => {
   it('does not report success when the saved content cannot be read back', async () => {
     const adapter = new SohuAdapter()
     await adapter.init(zhihuRuntime(async (url) => {
-      if (url.includes('/mpbp/bp/account/list')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accounts: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
+      if (url.includes('/mpbp/bp/account/listV2')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accountInfos: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
       if (url.includes('/news/v4/news/draft/v2')) return new Response(JSON.stringify({ success: true, data: 9 }), { status: 200 })
       return new Response('{}', { status: 500 })
     }))
@@ -421,6 +437,12 @@ describe('guarded Toutiao draft adapter', () => {
 })
 
 describe('guarded NetEase draft adapter', () => {
+  it('does not auto-check platforms whose login probe opens an editor tab', () => {
+    expect(shouldAutoCheckPlatformAuth(new NeteaseAdapter().meta)).toBe(false)
+    expect(shouldAutoCheckPlatformAuth(new XiaohongshuAdapter().meta)).toBe(false)
+    expect(shouldAutoCheckPlatformAuth(new ZhihuAdapter().meta)).toBe(true)
+  })
+
   it('rejects public publish and taskless saveDraft before touching the platform', async () => {
     const adapter = new NeteaseAdapter()
     const runtime = zhihuRuntime(async () => new Response('{}', { status: 200 }))

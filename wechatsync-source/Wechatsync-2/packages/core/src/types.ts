@@ -68,6 +68,8 @@ export interface PlatformMeta {
   icon: string
   homepage: string
   capabilities: PlatformCapability[]
+  /** interactive 检查可能打开平台页面，只能由用户明确选择该平台时触发。 */
+  authCheckMode?: 'passive' | 'interactive'
 }
 
 /**
