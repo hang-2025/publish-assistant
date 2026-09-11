@@ -35,8 +35,13 @@ function parseJson(text: string): any {
 }
 
 function accountRecord(envelope: any): { id: string; name: string; avatar: string } | null {
-  if (Number(envelope?.code) !== 1) return null
-  const candidates = [envelope?.data?.post, envelope?.data?.user, envelope?.data, envelope]
+  // 当前网易号前端用 /navinfo.do 读取登录账号，成功码兼容 1 与
+  // 100021；旧 postpage 接口需要 wemediaId 参数，不能用于登录探测。
+  if (![1, 100021].includes(Number(envelope?.code))) return null
+  const candidates = [
+    envelope?.data?.post, envelope?.data?.user, envelope?.data?.userInfo,
+    envelope?.data?.wemedia, envelope?.data?.media, envelope?.data, envelope,
+  ]
   for (const item of candidates) {
     if (!item || typeof item !== 'object') continue
     const id = String(item.wemediaId ?? item.mediaId ?? item.wemediaid ?? '')
@@ -97,7 +102,7 @@ export class NeteaseAdapter extends CodeAdapter {
   async checkAuth(): Promise<AuthResult> {
     try {
       await this.ensureEditorTab()
-      const response = await this.pageRequest({ url: `${API_PREFIX}/article/postpage.do`, method: 'GET' })
+      const response = await this.pageRequest({ url: `${API_PREFIX}/navinfo.do`, method: 'GET' })
       if (!response.ok) return { isAuthenticated: false }
       const account = accountRecord(parseJson(response.text))
       if (!account) return { isAuthenticated: false }

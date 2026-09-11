@@ -161,7 +161,7 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     name: '小红书',
     group: '主流平台',
     status: 'guarded-draft-unverified',
-    currentActions: ['只读扫描', '受保护的单篇图文草稿实现（待真实账号人工验收）'],
+    currentActions: ['只读扫描', '受保护的单篇小红书长文草稿实现（待真实账号人工验收）'],
     plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
     realActionPolicy: {
       upload: 'not-supported-as-standalone-action',
@@ -170,7 +170,7 @@ const LEGACY_PLATFORM_CAPABILITIES = [
       excelWrite: 'requires-explicit-authorization',
       archiveMove: 'requires-explicit-authorization',
     },
-    evidence: ['自动测试覆盖任务授权、草稿库回读、标题正文图片数量校验与公开发布拒绝'],
+    evidence: ['已核对小红书官方写长文编辑器、article-draft 草稿库与 10000 字限制；自动测试覆盖任务授权、图片锚点、无编号 ALT 图注、草稿回读与公开发布拒绝'],
     risks: ['网页端结构可能变化；尚未使用专用小红书测试账号完成人工验收，因此 verified/saveDraft 仍为 false'],
   },
 ];

@@ -1659,16 +1659,14 @@ test('Stage 7 HTTP：小红书草稿命令保持确认、平台绑定、快照�
     const progress = await call({ command: 'advanceXiaohongshuDraft', payload: { taskId, status } });
     assert.equal(progress.json.task.status, status);
   }
-  const required = ['title', 'body-text', 'image-count', 'draft-indexeddb', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
+  const required = ['title', 'body-text', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'draft-indexeddb', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
   const complete = await call({ command: 'completeXiaohongshuDraft', payload: { taskId, result: {
     success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
-    fidelityReport: { schema: 'yizao-html-fidelity-report', version: 1, overall: 'DEGRADED', fidelityVerified: true,
-      summary: { pass: 7, degraded: 0, unsupported: 2, fail: 0 },
-      checks: [...required.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
-        { key: 'image-order', status: 'UNSUPPORTED', required: false, detail: '人工检查' },
-        { key: 'image-anchor', status: 'UNSUPPORTED', required: false, detail: '平台不支持' }],
+    fidelityReport: { schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+      summary: { pass: 10, degraded: 0, unsupported: 0, fail: 0 },
+      checks: required.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
     },
-    postId: 's:http-test-draft', postUrl: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image',
+    postId: 's:http-test-draft', postUrl: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=article',
   } } });
   assert.equal(complete.json.task.status, 'waiting_confirmation');
   assert.equal(complete.json.task.publish.status, '未发布');

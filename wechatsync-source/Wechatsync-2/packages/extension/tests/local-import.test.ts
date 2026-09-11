@@ -50,15 +50,37 @@ describe('guarded Xiaohongshu draft adapter', () => {
   it('only succeeds after the creator draft database readback matches', async () => {
     const stages: string[] = []
     const adapter = new XiaohongshuAdapter()
-    await adapter.init(xiaohongshuRuntime({ ok: true, draftId: 's:local-key', title: '测试', body: '正文\n\n图片1：现场图', imageCount: 1 }))
+    await adapter.init(xiaohongshuRuntime({ ok: true, draftId: 's:local-key', title: '测试', body: '正文\n\n现场图', imageCount: 1, imageCaptions: ['现场图'], imageAnchors: [1] }))
     expect((await adapter.checkAuth()).isAuthenticated).toBe(true)
     const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="现场图">', markdown: '' }, {
       draftOnly: true, draftAuthorization: xiaohongshuDraftAuthorization, onDraftStage: (stage) => stages.push(stage),
     })
-    expect(result.success).toBe(true)
+    expect(result, result.error).toMatchObject({ success: true })
     expect(result.readBackVerified).toBe(true)
     expect(result.fidelityReport?.checks.find((item) => item.key === 'draft-only')?.status).toBe('PASS')
+    expect(result.fidelityReport?.checks.find((item) => item.key === 'caption-equals-html-alt')?.status).toBe('PASS')
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('uses the long-article path, accepts more than 1000 characters and never prefixes ALT captions', async () => {
+    const longText = '长文内容'.repeat(300)
+    const adapter = new XiaohongshuAdapter()
+    const runtime = xiaohongshuRuntime({
+      ok: true, draftId: 's:long-article', title: '长文测试', body: `${longText}\n\n现场图`,
+      imageCount: 1, imageCaptions: ['现场图'], imageAnchors: [1],
+    })
+    await adapter.init(runtime)
+    expect((await adapter.checkAuth()).isAuthenticated).toBe(true)
+    const result = await adapter.saveDraft({
+      title: '长文测试',
+      html: `<p>${longText}</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="现场图">`,
+      markdown: '',
+    }, { draftOnly: true, draftAuthorization: xiaohongshuDraftAuthorization })
+
+    expect(result, result.error).toMatchObject({ success: true })
+    expect(runtime.tabs.query).toHaveBeenCalledWith(expect.stringContaining('target=article'))
+    expect(result.postUrl).toContain('target=article')
+    expect(result.fidelityReport?.checks.find((item) => item.key === 'image-order')?.status).toBe('PASS')
   })
 })
 
@@ -467,7 +489,7 @@ describe('guarded NetEase draft adapter', () => {
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
         if (request.guardian) return { ok: true, status: 200, text: JSON.stringify({ code: 200, token: 'official-guardian-token' }) }
-        if (request.url === '/wemedia/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88', mediaName: '网易验收号' } }) }
+        if (request.url === '/wemedia/navinfo.do') return { ok: true, status: 200, text: JSON.stringify({ code: 100021, data: { userInfo: { wemediaId: 'media88', mediaName: '网易验收号' } } }) }
         if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { url: '//dingyue.ws.126.net/test.jpg' } }) }
         if (request.url === '/wemedia/article/status/api/publishV2.do') {
           savedForm = request.form
@@ -523,7 +545,7 @@ describe('guarded NetEase draft adapter', () => {
       query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
-        if (request.url === '/wemedia/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88' } }) }
+        if (request.url === '/wemedia/navinfo.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88' } }) }
         if (request.guardian) return { ok: false, status: 0, text: '{}' }
         throw new Error('save endpoint must not be called')
       }),
@@ -539,9 +561,9 @@ describe('Stage 3 acceptance safety', () => {
   const compatibleHealth = {
     ok: true,
     name: 'yizao-sync-service',
-    version: '0.6.0-stage7-xiaohongshu-draft',
+    version: '0.6.1-stage7-xiaohongshu-long-draft',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 36, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 37, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {

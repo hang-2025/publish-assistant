@@ -1,9 +1,9 @@
 /**
- * 小红书受保护图文草稿适配器。
+ * 小红书受保护长文草稿适配器。
  *
- * 仅在当前 Chrome 的 creator.xiaohongshu.com 页面中上传图片、填写标题和
- * 正文，并调用页面自身的“暂存离开”能力。保存后从页面自己的 IndexedDB
- * 回读标题、正文与图片数量；publish() 永久拒绝公开发布。
+ * 仅在当前 Chrome 的 creator.xiaohongshu.com“写长文”页面中填写标题、
+ * 正文并通过页面自己的图片上传器按原锚点插图，随后调用“暂存离开”。
+ * 保存后从页面自己的 article-draft IndexedDB 回读；publish() 永久拒绝。
  */
 import { CodeAdapter } from '../code-adapter'
 import type { Article, AuthResult, PlatformMeta, SyncResult } from '../../types'
@@ -13,12 +13,12 @@ import { assertCaptionPolicy, parseCanonicalArticle } from '../../article/canoni
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('Xiaohongshu')
-const EDITOR_URL = 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image'
-const MAX_TITLE_LENGTH = 20
-const MAX_BODY_LENGTH = 1000
-const MAX_IMAGES = 9
+const EDITOR_URL = 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=article'
+const MAX_TITLE_LENGTH = 64
+const MAX_BODY_LENGTH = 10000
+const MAX_IMAGES = 20
 
-type PageArticle = { title: string; body: string; images: Array<{ source: string; name: string }> }
+type PageArticle = { title: string; body: string; html: string; images: Array<{ source: string; name: string; marker: string }> }
 type PageResult = {
   ok: boolean
   authenticated?: boolean
@@ -26,6 +26,8 @@ type PageResult = {
   title?: string
   body?: string
   imageCount?: number
+  imageCaptions?: string[]
+  imageAnchors?: number[]
   error?: string
 }
 
@@ -34,9 +36,20 @@ function normalize(value: string): string { return value.replace(/\s+/g, ' ').tr
 function plainBody(article: ReturnType<typeof parseCanonicalArticle>): string {
   return article.blocks.map((block) => {
     if (block.kind === 'divider') return ''
-    if (block.kind === 'image') return `图片${block.order}：${block.alt}`
+    if (block.kind === 'image') return block.alt
     return block.text
   }).filter(Boolean).join('\n\n')
+}
+
+function longArticleHtml(article: ReturnType<typeof parseCanonicalArticle>): string {
+  return article.blocks.map((block) => {
+    if (block.kind === 'image') return `<p>__YIZAO_IMAGE_${block.order}__${block.alt.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`
+    if (block.kind === 'heading') return `<h${Math.min(block.level, 2)}>${block.html}</h${Math.min(block.level, 2)}>`
+    if (block.kind === 'paragraph') return `<p>${block.html}</p>`
+    if (block.kind === 'list' || block.kind === 'quote') return block.kind === 'quote' ? `<blockquote>${block.html}</blockquote>` : block.html
+    if (block.kind === 'table') return `<p>${block.text}</p>`
+    return '<p></p>'
+  }).join('')
 }
 
 function fidelity(checks: FidelityCheck[]): FidelityReport {
@@ -53,7 +66,7 @@ function fidelity(checks: FidelityCheck[]): FidelityReport {
 export class XiaohongshuAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
     id: 'xiaohongshu', name: '小红书', icon: 'https://creator.xiaohongshu.com/favicon.ico', homepage: EDITOR_URL,
-    capabilities: ['article', 'draft', 'image_upload'],
+    capabilities: ['article', 'draft', 'image_upload', 'long_article'],
     authCheckMode: 'interactive',
   }
   readonly preprocessConfig = {
@@ -79,7 +92,7 @@ export class XiaohongshuAdapter extends CodeAdapter {
   }
 
   async publish(_article: Article, _options?: PublishOptions): Promise<SyncResult> {
-    throw new Error('小红书公开发布已禁用；仅允许通过受保护的 saveDraft 工作流暂存图文草稿')
+    throw new Error('小红书公开发布已禁用；仅允许通过受保护的 saveDraft 工作流暂存长文草稿')
   }
 
   async saveDraft(article: Article, options?: PublishOptions): Promise<SyncResult> {
@@ -94,8 +107,8 @@ export class XiaohongshuAdapter extends CodeAdapter {
       const canonical = parseCanonicalArticle(article.html || '', article.title)
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
-      if (!canonical.images.length) throw new Error('小红书图文草稿至少需要 1 张图片')
-      if (canonical.images.length > MAX_IMAGES) throw new Error(`小红书图文草稿最多允许 ${MAX_IMAGES} 张图片`)
+      if (!canonical.images.length) throw new Error('小红书长文草稿至少需要 1 张图片')
+      if (canonical.images.length > MAX_IMAGES) throw new Error(`小红书长文草稿当前最多允许 ${MAX_IMAGES} 张图片`)
       if (Array.from(article.title).length > MAX_TITLE_LENGTH) throw new Error(`小红书标题超过 ${MAX_TITLE_LENGTH} 字，已阻止保存；不会静默截断`)
       const body = plainBody(canonical)
       if (Array.from(body).length > MAX_BODY_LENGTH) throw new Error(`小红书正文超过 ${MAX_BODY_LENGTH} 字，已阻止保存；不会静默截断`)
@@ -103,7 +116,8 @@ export class XiaohongshuAdapter extends CodeAdapter {
       const pageArticle: PageArticle = {
         title: article.title,
         body,
-        images: canonical.images.map((image) => ({ source: image.source, name: `image-${image.order}.jpg` })),
+        html: longArticleHtml(canonical),
+        images: canonical.images.map((image) => ({ source: image.source, name: `image-${image.order}.jpg`, marker: `__YIZAO_IMAGE_${image.order}__` })),
       }
       await options?.onDraftStage?.('uploading')
       const tabId = await this.ensureEditorTab()
@@ -120,15 +134,7 @@ export class XiaohongshuAdapter extends CodeAdapter {
           return rect.width > 0 && rect.height > 0
         }
         const normalizeText = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim()
-        const titleSelectors = [
-          '[contenteditable="true"][placeholder*="标题"]', '[contenteditable="true"][placeholder*="赞"]',
-          'input[placeholder*="标题"]', 'input[maxlength="20"]', '.title-input input',
-        ]
-        const bodySelectors = [
-          '[contenteditable="true"][class*="content"]', '[contenteditable="true"][class*="editor"]',
-          '[contenteditable="true"][placeholder*="描述"]', '[contenteditable="true"][placeholder*="正文"]',
-          '[contenteditable="true"][placeholder*="内容"]',
-        ]
+        const titleSelectors = ['textarea[placeholder="输入标题"]', 'textarea[placeholder*="标题"]', 'input[placeholder*="标题"]']
         const findVisible = (selectors: string[]) => {
           for (const selector of selectors) {
             const element = Array.from(document.querySelectorAll(selector)).find(visible)
@@ -142,9 +148,9 @@ export class XiaohongshuAdapter extends CodeAdapter {
             open.onerror = () => reject(open.error || new Error('无法打开小红书草稿库'))
             open.onsuccess = () => {
               const db = open.result
-              if (!db.objectStoreNames.contains('image-draft')) { db.close(); resolve([]); return }
-              const transaction = db.transaction('image-draft', 'readonly')
-              const store = transaction.objectStore('image-draft')
+              if (!db.objectStoreNames.contains('article-draft')) { db.close(); resolve([]); return }
+              const transaction = db.transaction('article-draft', 'readonly')
+              const store = transaction.objectStore('article-draft')
               const rows = store.getAll()
               const keys = store.getAllKeys()
               transaction.oncomplete = () => {
@@ -157,51 +163,56 @@ export class XiaohongshuAdapter extends CodeAdapter {
         }
         const draftShape = (entry: { key: IDBValidKey; row: any }) => {
           const content = entry.row?.content || {}
-          const draft = content?.draftStore || {}
-          const live = content?.contextStore?.liveContext || {}
-          const title = normalizeText(draft.title || live.title || entry.row?.title || entry.row?.noteTitle)
-          const body = normalizeText(content?.editorContent?.text || content?.editorContent?.plainText || '')
-          const imageCount = Number(draft?.imgList?.length || content?.noteImageConfig?.items?.length
-            || content?.noteImageConfig?.imageList?.length || entry.row?.images?.length || entry.row?.imageList?.length || 0)
+          const articleStore = content?.articleStore || {}
+          const title = normalizeText(articleStore.articleTitle || entry.row?.title || entry.row?.noteTitle)
+          const richJson = articleStore.richJson || {}
+          const topLevel = Array.isArray(richJson?.content) ? richJson.content : []
+          const nodeText = (node: any): string => node?.type === 'text'
+            ? String(node.text || '')
+            : (Array.isArray(node?.content) ? node.content.map(nodeText).join('') : '')
+          const imageNodeCount = (node: any): number => {
+            const own = node?.type === 'image' ? Math.max(1, Array.isArray(node?.attrs?.imgs) ? node.attrs.imgs.length : 1) : 0
+            return own + (Array.isArray(node?.content) ? node.content.reduce((sum: number, child: any) => sum + imageNodeCount(child), 0) : 0)
+          }
+          const imageCaptions: string[] = []
+          const imageAnchors: number[] = []
+          let anchor = 0
+          for (let index = 0; index < topLevel.length; index++) {
+            const count = imageNodeCount(topLevel[index])
+            if (count) {
+              const caption = normalizeText(nodeText(topLevel[index + 1]))
+              for (let item = 0; item < count; item++) { imageCaptions.push(caption); imageAnchors.push(anchor) }
+              if (caption) index++
+            } else if (normalizeText(nodeText(topLevel[index]))) anchor++
+          }
+          const body = normalizeText(topLevel.map(nodeText).filter(Boolean).join('\n'))
+          const imageCount = topLevel.reduce((sum: number, node: any) => sum + imageNodeCount(node), 0)
           const key = typeof entry.key === 'string' ? `s:${entry.key}` : typeof entry.key === 'number' ? `n:${entry.key}` : `j:${encodeURIComponent(JSON.stringify(entry.key))}`
-          return { key, title, body, imageCount }
+          return { key, title, body, imageCount, imageCaptions, imageAnchors, timeStamp: Number(entry.row?.timeStamp || 0) }
         }
         try {
           if (location.hostname !== 'creator.xiaohongshu.com' || location.pathname.toLowerCase().includes('login')) {
             return { ok: false, error: '请先登录小红书创作服务平台' }
           }
-          const beforeKeys = new Set((await readDrafts()).map((entry) => draftShape(entry).key))
-          let fileInput: HTMLInputElement | null = null
-          for (let attempt = 0; attempt < 40 && !fileInput; attempt++) {
-            fileInput = Array.from(document.querySelectorAll<HTMLInputElement>('input[type="file"]')).find((element) => {
-              const accept = element.accept || ''
-              return accept.includes('image') || /\.(jpe?g|png|gif|webp)/i.test(accept)
-            }) || null
-            if (!fileInput) await sleep(250)
+          const beforeDrafts = new Map((await readDrafts()).map((entry) => {
+            const shaped = draftShape(entry)
+            return [shaped.key, shaped.timeStamp]
+          }))
+          if (!document.querySelector('.rich-editor-container')) {
+            const enter = Array.from(document.querySelectorAll('button, [role="button"]')).find((element) => {
+              const text = normalizeText((element as HTMLElement).innerText || element.textContent)
+              return visible(element) && (text.includes('新的创作') || text.includes('写长文'))
+            }) as HTMLElement | undefined
+            enter?.click()
           }
-          if (!fileInput) return { ok: false, error: '小红书图文上传入口未出现，请确认当前为“上传图文”页面' }
-          const transfer = new DataTransfer()
-          for (let index = 0; index < input.images.length; index++) {
-            const response = await fetch(input.images[index].source)
-            if (!response.ok) return { ok: false, error: `第 ${index + 1} 张图片读取失败` }
-            const blob = await response.blob()
-            if (blob.size > 20 * 1024 * 1024) return { ok: false, error: `第 ${index + 1} 张图片超过 20MB` }
-            transfer.items.add(new File([blob], input.images[index].name, { type: blob.type || 'image/jpeg' }))
-          }
-          Object.defineProperty(fileInput, 'files', { configurable: true, value: transfer.files })
-          fileInput.dispatchEvent(new Event('input', { bubbles: true }))
-          fileInput.dispatchEvent(new Event('change', { bubbles: true }))
-
           let titleElement: HTMLElement | null = null
-          let bodyElement: HTMLElement | null = null
           for (let attempt = 0; attempt < 60; attempt++) {
             titleElement = findVisible(titleSelectors)
-            bodyElement = findVisible(bodySelectors)
-            const loading = document.querySelector('[class*="uploading"], [class*="upload"][class*="progress"]')
-            if (titleElement && bodyElement && !loading) break
+            if (titleElement && document.querySelector('.rich-editor-container') && (window as any)._tiptap_editor) break
             await sleep(500)
           }
-          if (!titleElement || !bodyElement) return { ok: false, error: '图片上传后没有找到小红书标题或正文输入区' }
+          const editor = (window as any)._tiptap_editor
+          if (!titleElement || !editor?.commands?.setContent) return { ok: false, error: '没有进入小红书“写长文”编辑器，请返回后重新点击保存' }
           const fill = (element: HTMLElement, value: string) => {
             element.focus()
             if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -223,49 +234,96 @@ export class XiaohongshuAdapter extends CodeAdapter {
             element.blur()
             return normalizeText(element.innerText || element.textContent) === normalizeText(value)
           }
-          if (!fill(titleElement, input.title)) return { ok: false, error: '小红书标题填写后页面值不一致，已停止暂存' }
-          if (!fill(bodyElement, input.body)) return { ok: false, error: '小红书正文填写后页面值不一致，已停止暂存' }
+          if (!fill(titleElement, input.title)) return { ok: false, error: '小红书长文标题填写后页面值不一致，已停止暂存' }
+          if (!editor.commands.setContent(input.html)) return { ok: false, error: '小红书长文正文写入失败，已停止暂存' }
 
-          const hosts = Array.from(document.querySelectorAll('xhs-publish-btn')).filter(visible) as Array<HTMLElement & Record<string, unknown>>
-          let invoked = false
-          for (const host of hosts) {
-            for (const name of ['_onSave', '_onSaveDraft', '_onDraft']) {
-              const method = host[name]
-              if (typeof method !== 'function') continue
-              try { (method as () => void).call(host); invoked = true; break } catch { /* try next official page callback */ }
+          const imageButton = Array.from(document.querySelectorAll<HTMLButtonElement>('.rich-editor-container button.menu-item'))[8]
+          if (!imageButton) return { ok: false, error: '小红书长文图片按钮未找到，页面结构可能已更新' }
+          const countImages = () => {
+            let count = 0
+            editor.state.doc.descendants((node: any) => { if (node.type?.name === 'image') count += Math.max(1, Array.isArray(node.attrs?.imgs) ? node.attrs.imgs.length : 1) })
+            return count
+          }
+          const markerPosition = (marker: string) => {
+            let found = -1
+            editor.state.doc.descendants((node: any, position: number) => {
+              if (found >= 0 || !node.isText) return
+              const offset = String(node.text || '').indexOf(marker)
+              if (offset >= 0) found = position + offset
+            })
+            return found
+          }
+          for (let index = 0; index < input.images.length; index++) {
+            const image = input.images[index]
+            const position = markerPosition(image.marker)
+            if (position < 0) return { ok: false, error: `第 ${index + 1} 张图片的正文锚点丢失，已停止暂存` }
+            editor.commands.setTextSelection(position)
+            const response = await fetch(image.source)
+            if (!response.ok) return { ok: false, error: `第 ${index + 1} 张图片读取失败` }
+            const blob = await response.blob()
+            if (blob.size > 10 * 1024 * 1024) return { ok: false, error: `第 ${index + 1} 张图片超过小红书长文 10MB 上限` }
+            const transfer = new DataTransfer()
+            transfer.items.add(new File([blob], image.name, { type: blob.type || 'image/jpeg' }))
+            let capturedInput: HTMLInputElement | null = null
+            const originalClick = HTMLInputElement.prototype.click
+            HTMLInputElement.prototype.click = function () { capturedInput = this }
+            try { imageButton.click() } finally { HTMLInputElement.prototype.click = originalClick }
+            if (!capturedInput) return { ok: false, error: `第 ${index + 1} 张图片未能接入小红书官方上传器` }
+            const officialInput = capturedInput as HTMLInputElement
+            Object.defineProperty(officialInput, 'files', { configurable: true, value: transfer.files })
+            officialInput.dispatchEvent(new Event('change', { bubbles: true }))
+            const expectedCount = index + 1
+            for (let attempt = 0; attempt < 80 && countImages() < expectedCount; attempt++) await sleep(250)
+            if (countImages() < expectedCount) return { ok: false, error: `第 ${index + 1} 张图片上传后未进入长文正文` }
+            for (let attempt = 0; attempt < 80; attempt++) {
+              const json = editor.getJSON()
+              const encoded = JSON.stringify(json)
+              if (!encoded.includes('blob:') && !encoded.includes('percent\":0')) break
+              await sleep(250)
             }
-            if (invoked) break
+            const uploadState = JSON.stringify(editor.getJSON())
+            if (uploadState.includes('blob:') || uploadState.includes('percent\":0')) {
+              return { ok: false, error: `第 ${index + 1} 张图片尚未完成官方上传，已停止暂存` }
+            }
+            const updatedPosition = markerPosition(image.marker)
+            if (updatedPosition < 0 || !editor.chain().focus().insertContentAt({ from: updatedPosition, to: updatedPosition + image.marker.length }, '').run()) {
+              return { ok: false, error: `第 ${index + 1} 张图片说明定位失败，已停止暂存` }
+            }
           }
-          if (!invoked) {
-            const button = Array.from(document.querySelectorAll('button, [role="button"]')).find((element) => {
-              const text = normalizeText((element as HTMLElement).innerText || element.textContent)
-              return visible(element) && ['暂存离开', '存草稿', '保存草稿'].some((label) => text.includes(label))
-            }) as HTMLButtonElement | null
-            if (button && !button.disabled) { button.click(); invoked = true }
-          }
+          const editorText = normalizeText(editor.getText())
+          if (editorText !== normalizeText(input.body)) return { ok: false, error: '小红书长文正文写入后与源正文不一致，已停止暂存' }
+          if (countImages() !== input.images.length) return { ok: false, error: '小红书长文图片数量与源文章不一致，已停止暂存' }
+
+          const button = Array.from(document.querySelectorAll('button, [role="button"]')).find((element) => {
+            const text = normalizeText((element as HTMLElement).innerText || element.textContent)
+            return visible(element) && text === '暂存离开'
+          }) as HTMLButtonElement | null
+          let invoked = false
+          if (button && !button.disabled) { button.click(); invoked = true }
           if (!invoked) return { ok: false, error: '小红书页面没有提供可用的“暂存离开”入口；公开发布未执行' }
 
           for (let attempt = 0; attempt < 40; attempt++) {
             await sleep(500)
             const drafts = (await readDrafts()).map(draftShape)
-            const matched = drafts.find((draft) => !beforeKeys.has(draft.key)
+            const matched = drafts.find((draft) => (!beforeDrafts.has(draft.key) || draft.timeStamp > (beforeDrafts.get(draft.key) || 0))
               && draft.title === normalizeText(input.title)
               && draft.body === normalizeText(input.body)
               && draft.imageCount === input.images.length)
-            if (matched) return { ok: true, draftId: matched.key, title: matched.title, body: matched.body, imageCount: matched.imageCount }
+            if (matched) return { ok: true, draftId: matched.key, title: matched.title, body: matched.body, imageCount: matched.imageCount, imageCaptions: matched.imageCaptions, imageAnchors: matched.imageAnchors }
           }
-          return { ok: false, error: '小红书页面执行了暂存，但未能从本地草稿库回读匹配的标题、正文和图片数量' }
+          return { ok: false, error: '小红书页面执行了暂存，但未能从 article-draft 回读匹配的长文、图片和说明' }
         } catch (error) { return { ok: false, error: String((error as Error)?.message || error) } }
       }, [pageArticle])
       if (!pageResult.ok || !pageResult.draftId) throw new Error(pageResult.error || '小红书草稿暂存失败')
       const checks: FidelityCheck[] = [
         { key: 'title', status: normalize(pageResult.title || '') === normalize(article.title) ? 'PASS' : 'FAIL', required: true, detail: 'IndexedDB 回读标题一致' },
-        { key: 'body-text', status: normalize(pageResult.body || '') === normalize(body) ? 'PASS' : 'FAIL', required: true, detail: 'IndexedDB 回读正文与图片说明文本一致' },
+        { key: 'body-text', status: normalize(pageResult.body || '') === normalize(body) ? 'PASS' : 'FAIL', required: true, detail: 'article-draft 回读正文与图片 ALT 说明文本一致' },
         { key: 'image-count', status: pageResult.imageCount === canonical.images.length ? 'PASS' : 'FAIL', required: true, detail: `源 ${canonical.images.length} / 回读 ${pageResult.imageCount || 0}` },
-        { key: 'image-order', status: 'UNSUPPORTED', required: false, detail: '小红书本地草稿库未提供稳定的源图片顺序指纹，需人工检查' },
-        { key: 'image-anchor', status: 'UNSUPPORTED', required: false, detail: '小红书图文笔记不保留 HTML 正文内图片锚点' },
-        { key: 'draft-indexeddb', status: 'PASS', required: true, detail: '已从 creator.xiaohongshu.com 自有 image-draft 草稿库回读' },
-        { key: 'trusted-draft-url', status: 'PASS', required: true, detail: '小红书 HTTPS 创作中心图文编辑地址' },
+        { key: 'image-order', status: JSON.stringify(pageResult.imageCaptions || []) === JSON.stringify(canonical.images.map((image) => image.alt)) ? 'PASS' : 'FAIL', required: true, detail: '按 article-draft 图片节点后的 ALT 原文核对顺序；不添加“图片N”前缀' },
+        { key: 'image-anchor', status: JSON.stringify(pageResult.imageAnchors || []) === JSON.stringify(canonical.images.map((image) => image.anchor)) ? 'PASS' : 'FAIL', required: true, detail: '长文图片相对正文块锚点回读一致' },
+        { key: 'caption-equals-html-alt', status: JSON.stringify(pageResult.imageCaptions || []) === JSON.stringify(canonical.images.map((image) => image.alt)) ? 'PASS' : 'FAIL', required: true, detail: '每张图下方仅显示 HTML img.alt 原文' },
+        { key: 'draft-indexeddb', status: 'PASS', required: true, detail: '已从 creator.xiaohongshu.com 自有 article-draft 草稿库回读' },
+        { key: 'trusted-draft-url', status: 'PASS', required: true, detail: '小红书 HTTPS 创作中心写长文地址' },
         { key: 'draft-only', status: 'PASS', required: true, detail: '仅调用暂存回调；未调用发布回调' },
         { key: 'read-back-verified', status: 'PASS', required: true, detail: '草稿标题、正文与图片数量已回读核对' },
       ]
@@ -283,7 +341,7 @@ export class XiaohongshuAdapter extends CodeAdapter {
   private async ensureEditorTab(): Promise<number> {
     if (!this.runtime.tabs) throw new Error('当前运行环境不支持小红书页面安全请求')
     if (this.editorTabId !== null) return this.editorTabId
-    const existing = await this.runtime.tabs.query('https://creator.xiaohongshu.com/publish/publish*')
+    const existing = await this.runtime.tabs.query(`${EDITOR_URL}*`)
     if (existing[0]) { this.editorTabId = existing[0].id; return existing[0].id }
     const created = await this.runtime.tabs.create(EDITOR_URL, false)
     await this.runtime.tabs.waitForLoad(created.id, 45000)

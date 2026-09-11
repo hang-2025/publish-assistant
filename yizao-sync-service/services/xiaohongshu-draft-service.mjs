@@ -6,7 +6,7 @@ const ACCOUNT_ID = 'xiaohongshu-current-session';
 const MODE = 'xiaohongshu-draft';
 const PROGRESS = new Set([TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT]);
 const REQUIRED_CHECKS = new Set([
-  'title', 'body-text', 'image-count', 'draft-indexeddb',
+  'title', 'body-text', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'draft-indexeddb',
   'trusted-draft-url', 'draft-only', 'read-back-verified',
 ]);
 
@@ -56,7 +56,7 @@ function safeDraftResult(result = {}) {
   let url;
   try { url = new URL(String(result.postUrl || '')); } catch { throw new Error('小红书草稿回读结果缺少有效草稿 URL'); }
   if (url.protocol !== 'https:' || url.hostname !== 'creator.xiaohongshu.com'
-      || url.pathname !== '/publish/publish' || url.searchParams.get('target') !== 'image') {
+      || url.pathname !== '/publish/publish' || url.searchParams.get('target') !== 'article') {
     throw new Error('小红书草稿 URL 不受信任');
   }
   if (result.success !== true || result.draftOnly !== true || result.readBackVerified !== true || result.fidelityVerified !== true) {

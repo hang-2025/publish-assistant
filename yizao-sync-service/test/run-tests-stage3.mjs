@@ -203,16 +203,14 @@ test('Xiaohongshu draft task requires confirmation and verified IndexedDB readba
   const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
   await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
   for (const status of [TASK_STATUS.UPLOADING, TASK_STATUS.FILLING, TASK_STATUS.SAVING_DRAFT]) await f.service.progress({ taskId: prepared.task.taskId, status });
-  const checks = ['title', 'body-text', 'image-count', 'draft-indexeddb', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
-  const report = { schema: 'yizao-html-fidelity-report', version: 1, overall: 'DEGRADED', fidelityVerified: true,
-    summary: { pass: 7, degraded: 0, unsupported: 2, fail: 0 },
-    checks: [...checks.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
-      { key: 'image-order', status: 'UNSUPPORTED', required: false, detail: '人工检查' },
-      { key: 'image-anchor', status: 'UNSUPPORTED', required: false, detail: '平台不支持' }],
+  const checks = ['title', 'body-text', 'image-count', 'image-order', 'image-anchor', 'caption-equals-html-alt', 'draft-indexeddb', 'trusted-draft-url', 'draft-only', 'read-back-verified'];
+  const report = { schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+    summary: { pass: 10, degraded: 0, unsupported: 0, fail: 0 },
+    checks: checks.map((key) => ({ key, status: 'PASS', required: true, detail: '一致' })),
   };
   const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
     success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: report,
-    postId: 's:local-draft-key', postUrl: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=image',
+    postId: 's:local-draft-key', postUrl: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=article',
   } });
   assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
   assert.equal(done.states.publish.status, '未发布');

@@ -54,6 +54,7 @@ export type PlatformCapability =
   | 'article'      // 发布文章
   | 'draft'        // 草稿支持
   | 'image_upload' // 图片上传
+  | 'long_article' // 长文编辑器
   | 'categories'   // 分类
   | 'tags'         // 标签
   | 'cover'        // 封面图
