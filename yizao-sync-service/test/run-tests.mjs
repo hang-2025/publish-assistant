@@ -356,8 +356,8 @@ test('health 无需令牌，返回版本', async () => {
   const json = await res.json();
   assert.equal(json.name, 'yizao-sync-service');
   assert.equal(json.protocol.version, 2);
-  assert.equal(json.build.packageVersion, 37);
-  assert.equal(json.build.id, 'stage7-xiaohongshu-long-draft-v3.7');
+  assert.equal(json.build.packageVersion, 38);
+  assert.equal(json.build.id, 'stage7-caption-cleanup-v3.8');
 });
 
 test('命令接口：无 Origin / 网页 Origin / 错误 Host 一律拒绝', async () => {

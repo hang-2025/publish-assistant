@@ -22,6 +22,8 @@ type PageArticle = { title: string; body: string; html: string; images: Array<{ 
 type PageResult = {
   ok: boolean
   authenticated?: boolean
+  userId?: string
+  username?: string
   draftId?: string
   title?: string
   body?: string
@@ -79,14 +81,36 @@ export class XiaohongshuAdapter extends CodeAdapter {
   async checkAuth(): Promise<AuthResult> {
     try {
       const tabId = await this.ensureEditorTab()
-      const result = await this.runtime.tabs!.executeScript<PageResult, []>(tabId, () => {
-        const authenticated = location.hostname === 'creator.xiaohongshu.com'
-          && !location.pathname.toLowerCase().includes('login')
-          && Boolean(document.querySelector('input[type="file"], xhs-publish-btn, [contenteditable="true"]'))
-        return { ok: authenticated, authenticated }
+      const result = await this.runtime.tabs!.executeScript<PageResult, []>(tabId, async () => {
+        if (location.hostname !== 'creator.xiaohongshu.com' || location.pathname.toLowerCase().includes('login')) {
+          return { ok: false, authenticated: false }
+        }
+        const account = (value: any) => {
+          const candidates = [value?.data?.userInfo, value?.data?.user, value?.data, value]
+          for (const candidate of candidates) {
+            const userId = String(candidate?.userId || candidate?.userid || candidate?.id || '').trim()
+            if (userId) return { userId, username: String(candidate?.userName || candidate?.nickname || candidate?.name || '') }
+          }
+          return null
+        }
+        try {
+          // 小红书当前页面自身使用该官方接口和本地 USER_INFO_FOR_BIZ
+          // 维护登录态。不能再用“页面是否已有输入框”推断，否则写长文入口页
+          // 会把已登录用户误判为未登录。
+          const response = await fetch('/api/galaxy/user/info', { credentials: 'include' })
+          if (response.ok) {
+            const found = account(await response.json())
+            if (found) return { ok: true, authenticated: true, ...found }
+          }
+        } catch { /* fall back to the official page's own session cache */ }
+        try {
+          const found = account(JSON.parse(localStorage.getItem('USER_INFO_FOR_BIZ') || '{}'))
+          if (found) return { ok: true, authenticated: true, ...found }
+        } catch { /* invalid official cache means unauthenticated */ }
+        return { ok: false, authenticated: false }
       }, [])
       return result.authenticated
-        ? { isAuthenticated: true, userId: 'xiaohongshu-current-session', username: '当前 Chrome 小红书会话' }
+        ? { isAuthenticated: true, userId: result.userId || 'xiaohongshu-current-session', username: result.username || '当前 Chrome 小红书会话' }
         : { isAuthenticated: false, error: '请先在当前 Chrome 登录小红书创作服务平台' }
     } catch (error) { return { isAuthenticated: false, error: (error as Error).message } }
   }

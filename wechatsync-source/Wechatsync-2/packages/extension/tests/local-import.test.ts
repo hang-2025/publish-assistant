@@ -561,9 +561,9 @@ describe('Stage 3 acceptance safety', () => {
   const compatibleHealth = {
     ok: true,
     name: 'yizao-sync-service',
-    version: '0.6.1-stage7-xiaohongshu-long-draft',
+    version: '0.6.2-stage7-caption-cleanup',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 37, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 38, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {
@@ -618,6 +618,21 @@ describe('canonical publishing HTML fidelity', () => {
     const rendered = renderCanonicalArticle(article)
     expect(rendered).toContain('<figcaption>现场图一</figcaption>')
     expect(rendered).not.toContain('旧图注')
+  })
+
+  it('removes packaging image ordinals from every visible ALT caption', () => {
+    const article = parseCanonicalArticle(
+      '<img src="a" alt="图片1：易造智能雷暴仪用于无人机作业雷暴监测"><img src="b" alt="图 2: 双探头结构示意">',
+      '测试标题',
+    )
+    expect(article.images.map((image) => image.alt)).toEqual([
+      '易造智能雷暴仪用于无人机作业雷暴监测',
+      '双探头结构示意',
+    ])
+    const rendered = renderCanonicalArticle(article)
+    expect(rendered).toContain('<figcaption>易造智能雷暴仪用于无人机作业雷暴监测</figcaption>')
+    expect(rendered).toContain('<figcaption>双探头结构示意</figcaption>')
+    expect(rendered).not.toMatch(/<figcaption>\s*(?:图片|图)\s*\d+/)
   })
 
   it('accepts 140 Unicode characters and blocks 141 without silently truncating', () => {

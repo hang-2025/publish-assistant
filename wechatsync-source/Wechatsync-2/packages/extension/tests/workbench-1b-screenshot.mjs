@@ -186,10 +186,10 @@ const capabilities = {
   phase: '7-xiaohongshu-draft-unverified',
   realActionsEnabled: false,
   runtime: {
-    serviceVersion: '0.6.1-stage7-xiaohongshu-long-draft',
+    serviceVersion: '0.6.2-stage7-caption-cleanup',
     protocol: { name: 'yizao-local-service', version: 2 },
-    acceptanceBuildId: 'stage7-xiaohongshu-long-draft-v3.7',
-    requiredExtensionBuildId: 'stage7-xiaohongshu-long-draft-v3.7',
+    acceptanceBuildId: 'stage7-caption-cleanup-v3.8',
+    requiredExtensionBuildId: 'stage7-caption-cleanup-v3.8',
   },
   actions: {
     upload: '真实上传/保存草稿',
@@ -244,7 +244,7 @@ try {
   })
   await page.route('http://127.0.0.1:8788/**', async (route) => {
     const req = route.request()
-    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.6.1-stage7-xiaohongshu-long-draft', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 37, id: 'stage7-xiaohongshu-long-draft-v3.7', extensionBuildId: 'stage7-xiaohongshu-long-draft-v3.7' } } })
+    if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, name: 'yizao-sync-service', version: healthMismatch ? 'old-service' : '0.6.2-stage7-caption-cleanup', protocol: { name: 'yizao-local-service', version: 2 }, build: { packageVersion: 38, id: 'stage7-caption-cleanup-v3.8', extensionBuildId: 'stage7-caption-cleanup-v3.8' } } })
     const message = req.postDataJSON()
     if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' }, archive: { configured: true, resolved: 'C:\\模拟目录\\已归档' } }, excel: { configured: true, resolved: 'C:\\模拟目录\\计划表\\阶段1C模拟登记表.xlsx', sheetName: '9月执行计划' }, mappings: { platformValues: { 'eyzao.com': ['官网', 'eyzao.com', 'www.eyzao.com'], baijiahao: ['百家号', 'baijiahao'], zhihu: ['知乎', 'zhihu'], sohu: ['搜狐', '搜狐号', 'sohu'] } }, captionPolicy: { official: 'keep-existing-only', baijiahao: 'keep-existing-only', draft: 'use-existing-alt-after-preview' } } })
     if (message.command === 'scan') return route.fulfill({ json: { ok: true, packages } })

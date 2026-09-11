@@ -1,7 +1,7 @@
-export const EXTENSION_BUILD_ID = 'stage7-xiaohongshu-long-draft-v3.7'
-export const ACCEPTANCE_PACKAGE_VERSION = 37
-export const ACCEPTANCE_PACKAGE_LABEL = '3.7'
-export const EXPECTED_SERVICE_VERSION = '0.6.1-stage7-xiaohongshu-long-draft'
+export const EXTENSION_BUILD_ID = 'stage7-caption-cleanup-v3.8'
+export const ACCEPTANCE_PACKAGE_VERSION = 38
+export const ACCEPTANCE_PACKAGE_LABEL = '3.8'
+export const EXPECTED_SERVICE_VERSION = '0.6.2-stage7-caption-cleanup'
 export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
 
 export interface ServiceHealth {

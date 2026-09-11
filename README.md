@@ -7,7 +7,7 @@
 当前代码包含 **知乎、搜狐号、头条号、网易号与小红书的受保护单篇草稿闭环（实现完成，真实账号验收待执行）**：
 
 - 只有知乎、搜狐号、头条号、网易号或小红书 `saveDraft` 在用户当次明确确认、不可变快照复核和当前 Chrome 登录检查通过后可执行；
-- 发布包 `02-后台一键复制正文.html` 是受保护草稿的 canonical source；复用 Canonical Article 块模型保持正文顺序与图片锚点，并按 `HTML img.alt` 生成可见 Caption；
+- 发布包 `02-后台一键复制正文.html` 是受保护草稿的 canonical source；复用 Canonical Article 块模型保持正文顺序与图片锚点，并按 `HTML img.alt` 生成可见 Caption；若 ALT 以“图片N：/图N：”开头，会先去掉该打包编号，只显示实际说明；
 - 保存后必须回读并生成 Fidelity Report，标题/正文主块/图片数量、顺序、锚点与 Caption 等必需项全部通过后才可进入 `draft_saved`；
 - 知乎、搜狐号、头条号、网易号、小红书 `publish()` 与所有平台公开发布始终拒绝；
 - 不修改真实 Excel；
@@ -15,7 +15,7 @@
 - 不启动、停止或修改旧桌面自动发布助手；
 - 不复制、保存或接管 Chrome Cookie/Profile；仅使用扩展所在 Chrome 的当前会话。
 
-官网和百家号的模拟流程会停在“等待用户最终提交”；五个主流平台具有受保护的单篇保存草稿与回读流程，未完成各自真实账号人工验收前 capability 仍标记 `verified=false`、`saveDraft=false`。小红书使用“写长文”草稿，正文最多 10000 字；图片按 HTML 锚点插入，图片下方只显示原始 ALT，不添加“图片N”前缀，并从创作中心 `article-draft` 草稿库回读验证。
+官网和百家号的模拟流程会停在“等待用户最终提交”；五个主流平台具有受保护的单篇保存草稿与回读流程，未完成各自真实账号人工验收前 capability 仍标记 `verified=false`、`saveDraft=false`。各平台图片下方只显示去除“图片N：/图N：”打包编号后的 ALT 说明。小红书使用“写长文”草稿，正文最多 10000 字；图片按 HTML 锚点插入，并从创作中心 `article-draft` 草稿库回读验证。
 
 ## 目录
 

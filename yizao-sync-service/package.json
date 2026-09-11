@@ -1,6 +1,6 @@
 {
   "name": "yizao-sync-service",
-  "version": "0.6.1-stage7-xiaohongshu-long-draft",
+  "version": "0.6.2-stage7-caption-cleanup",
   "private": true,
   "type": "module",
   "description": "易造发布助手本地服务（保留只读/模拟能力，并提供受保护的知乎、搜狐号、头条号、网易号单篇保存草稿协调）",

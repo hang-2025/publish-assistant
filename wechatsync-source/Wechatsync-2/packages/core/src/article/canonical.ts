@@ -40,6 +40,15 @@ export interface FidelityReport {
 
 const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
 const escapeAttr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+const IMAGE_ORDINAL = '(?:[0-9０-９]+|[一二三四五六七八九十百零〇两]+)'
+const IMAGE_ORDINAL_PREFIX = new RegExp(
+  `^(?:(?:图片|图)\\s*(?:第\\s*)?${IMAGE_ORDINAL}\\s*(?:张)?|第\\s*${IMAGE_ORDINAL}\\s*张(?:图片|图))\\s*[：:、.．\\-—]\\s*`,
+)
+
+/** Remove packaging-only labels such as “图片1：” from user-visible ALT captions. */
+export function visibleImageAlt(value: string): string {
+  return normalize(value).replace(IMAGE_ORDINAL_PREFIX, '').trim()
+}
 
 function semanticHtml(element: Element): string {
   const clone = element.cloneNode(true) as Element
@@ -59,7 +68,7 @@ export function parseCanonicalArticle(html: string, title = ''): CanonicalArticl
   let anchor = 0
 
   const pushImage = (img: Element) => {
-    const alt = normalize(img.getAttribute('alt') || '')
+    const alt = visibleImageAlt(img.getAttribute('alt') || '')
     blocks.push({
       kind: 'image', source: img.getAttribute('src') || '', alt,
       captionCandidate: alt, order: ++imageOrder, anchor,

@@ -190,7 +190,11 @@ export class NeteaseAdapter extends CodeAdapter {
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
     const response = await this.pageRequest({ url: `${API_PREFIX}/api/v3/upload/picupload`, method: 'POST', imageSource: src })
-    if (!response.ok) throw new Error(`网易号图片上传失败: HTTP ${response.status}`)
+    if (!response.ok) {
+      let detail = ''
+      try { detail = String(parseJson(response.text)?.error || '') } catch { /* keep status-only error */ }
+      throw new Error(`网易号图片上传失败: HTTP ${response.status}${detail ? `（${detail}）` : ''}`)
+    }
     const envelope = parseJson(response.text)
     if (![1, 200].includes(Number(envelope?.code))) throw new Error(String(envelope?.message || envelope?.msg || '网易号图片上传失败'))
     const candidates = [envelope?.data?.url, envelope?.data?.picUrl, envelope?.url]
@@ -213,29 +217,53 @@ export class NeteaseAdapter extends CodeAdapter {
   private async pageRequest(request: PageRequest): Promise<PageResponse> {
     const tabId = await this.ensureEditorTab()
     const result = await this.runtime.tabs!.executeScript<PageResponse | null, [PageRequest]>(tabId, async (input) => {
-      if (input.guardian) {
-        if (typeof neg === 'undefined' || typeof neg?.getToken !== 'function') {
-          return { ok: false, status: 0, text: JSON.stringify({ error: 'guardian-unavailable' }) }
+      try {
+        if (input.guardian) {
+          if (typeof neg === 'undefined' || typeof neg?.getToken !== 'function') {
+            return { ok: false, status: 0, text: JSON.stringify({ error: 'guardian-unavailable' }) }
+          }
+          const result = await neg.getToken()
+          return { ok: true, status: 200, text: JSON.stringify(result) }
         }
-        const result = await neg.getToken()
-        return { ok: true, status: 200, text: JSON.stringify(result) }
+        if (input.imageSource) {
+          let blob: Blob
+          const matched = input.imageSource.match(/^data:([^;,]+)?;base64,([A-Za-z0-9+/=\r\n]+)$/)
+          if (matched) {
+            const binary = atob(matched[2].replace(/\s+/g, ''))
+            const bytes = new Uint8Array(binary.length)
+            for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+            blob = new Blob([bytes], { type: matched[1] || 'image/jpeg' })
+          } else {
+            const source = await fetch(input.imageSource, { credentials: 'include' })
+            if (!source.ok) throw new Error(`图片读取失败: ${source.status}`)
+            blob = await source.blob()
+          }
+          if (blob.size > 10 * 1024 * 1024) throw new Error('网易号图片超过 10MB，已停止上传')
+          const form = new FormData()
+          form.append('file', blob, 'image.jpg')
+          form.append('from', 'neteasecode_mp')
+          // 网易编辑器自己的上传器走 XHR。使用相同机制可以稳定取得
+          // load/error 回调，避免 MAIN-world fetch 在上传分支返回 undefined。
+          return await new Promise<PageResponse>((resolve) => {
+            const xhr = new XMLHttpRequest()
+            xhr.open('POST', input.url || '', true)
+            xhr.withCredentials = true
+            xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, text: xhr.responseText || '' })
+            xhr.onerror = () => resolve({ ok: false, status: 0, text: JSON.stringify({ error: 'network-error' }) })
+            xhr.onabort = () => resolve({ ok: false, status: 0, text: JSON.stringify({ error: 'request-aborted' }) })
+            xhr.send(form)
+          })
+        }
+        const init: RequestInit = { method: input.method || 'GET', credentials: 'include' }
+        if (input.form) {
+          init.headers = { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }
+          init.body = new URLSearchParams(input.form)
+        }
+        const response = await fetch(input.url || '', init)
+        return { ok: response.ok, status: response.status, text: await response.text() }
+      } catch (error) {
+        return { ok: false, status: 0, text: JSON.stringify({ error: String((error as Error)?.message || error) }) }
       }
-      const init: RequestInit = { method: input.method || 'GET', credentials: 'include' }
-      if (input.form) {
-        init.headers = { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }
-        init.body = new URLSearchParams(input.form)
-      } else if (input.imageSource) {
-        const source = await fetch(input.imageSource)
-        if (!source.ok) throw new Error(`图片读取失败: ${source.status}`)
-        const blob = await source.blob()
-        if (blob.size > 10 * 1024 * 1024) throw new Error('网易号图片超过 10MB，已停止上传')
-        const form = new FormData()
-        form.append('file', blob, 'image.jpg')
-        form.append('from', 'neteasecode_mp')
-        init.body = form
-      }
-      const response = await fetch(input.url || '', init)
-      return { ok: response.ok, status: response.status, text: await response.text() }
     }, [request])
     if (!result || typeof result.ok !== 'boolean' || typeof result.status !== 'number' || typeof result.text !== 'string') {
       throw new Error('网易号页面未返回登录检查结果；请刷新网易号创作页并确认账号仍已登录')
