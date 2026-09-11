@@ -216,6 +216,17 @@ test('Xiaohongshu draft task requires confirmation and verified IndexedDB readba
   assert.equal(done.states.publish.status, '未发布');
 });
 
+test('Xiaohongshu draft task allows a confirmed retry when login failed before saving', async (t) => {
+  const f = await xiaohongshuFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const first = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await f.service.fail({ taskId: first.task.taskId, error: '登录检查未通过' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  assert.match(retry.task.taskKey, /:retry:2$/);
+});
+
 async function neteaseFixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage6-netease-'));
   const store = new TaskStore(path.join(dir, 'tasks'));
@@ -246,6 +257,18 @@ test('NetEase draft task requires immutable snapshot, guardian check and verifie
   assert.equal(done.states.publish.status, '未发布');
   assert.equal(done.states.excel.status, '未登记');
   assert.equal(done.states.archive.status, '未归档');
+});
+
+test('NetEase draft task allows a confirmed retry when image upload failed before saving', async (t) => {
+  const f = await neteaseFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const first = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: first.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.fail({ taskId: first.task.taskId, error: '图片上传在保存请求前失败' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  assert.match(retry.task.taskKey, /:retry:2$/);
 });
 
 test('NetEase draft task rejects untrusted URL and source mutation', async (t) => {

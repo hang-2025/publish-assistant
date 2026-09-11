@@ -65,6 +65,27 @@ const SITE_ADAPTERS: Record<string, string> = {
   'www.eyzao.com': 'emcms', 'eyzao.com': 'emcms', 'www.eyzao.cn': 'fhlcms', 'eyzao.cn': 'fhlcms',
 }
 
+const PLATFORM_EDITOR_URLS: Record<string, string> = {
+  zhihu: 'https://zhuanlan.zhihu.com/write',
+  sohu: 'https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle',
+  toutiao: 'https://mp.toutiao.com/profile_v4/graphic/publish',
+  netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
+  xiaohongshu: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=article',
+}
+const PLATFORM_CONTINUATION_HOSTS: Record<string, string> = {
+  zhihu: 'zhuanlan.zhihu.com', sohu: 'mp.sohu.com', toutiao: 'mp.toutiao.com',
+  netease: 'mp.163.com', xiaohongshu: 'creator.xiaohongshu.com',
+}
+
+async function openPlatformTab(platformId: string, candidate?: string): Promise<void> {
+  const value = candidate || PLATFORM_EDITOR_URLS[platformId]
+  const url = new URL(value)
+  if (url.protocol !== 'https:' || url.hostname !== PLATFORM_CONTINUATION_HOSTS[platformId]) {
+    throw new Error('平台返回的继续操作地址不受信任')
+  }
+  await chrome.tabs.create({ url: url.toString(), active: true })
+}
+
 function publishPreview(siteKey: string, siteName: string): Capability {
   return {
     kind: 'publish-preview', label: '发布流程预览', siteKey, siteName,
@@ -81,9 +102,9 @@ function draftPreview(platform: { id: string; name: string }): Capability {
 }
 function guardedDraft(platform: { id: string; name: string }): Capability {
   return {
-    kind: 'guarded-draft', label: '一键发布（仅保存草稿）', platform,
+    kind: 'guarded-draft', label: '一键发布（打开平台继续）', platform,
     tags: ['单篇', '保存草稿', '禁止公开发布'],
-    explain: `仅在当次确认、服务端不可变快照复核和${platform.name}登录检查通过后保存一篇草稿；不会公开发布、写 Excel 或移动文件。`,
+    explain: `点击后自动检查并保存一篇草稿，再打开${platform.name}页面供你检查并完成发布；不会自动点击平台的最终发布。`,
   }
 }
 function notReady(why: string): Capability {
@@ -557,6 +578,7 @@ export function Workbench() {
   const [guardedDraftBusy, setGuardedDraftBusy] = useState(false)
   const [guardedDraftNote, setGuardedDraftNote] = useState('')
   const [acceptanceChecks, setAcceptanceChecks] = useState<AcceptanceCheck[]>([])
+  const [showAcceptanceDetails, setShowAcceptanceDetails] = useState(false)
   const [acceptanceBusy, setAcceptanceBusy] = useState(false)
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidence | null>(null)
   const pollRef = useRef<number>()
@@ -667,7 +689,7 @@ export function Workbench() {
         platformValues: parsePlatformValues(platformValuesText),
         captionPolicy,
       })
-      setScans({}); setDetail(null); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
+      setScans({}); setDetail(null); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([]); setShowAcceptanceDetails(false)
       await markPackageIdsStale()
       await loadConfig()
       if (rootInputs.unpublished.trim()) setTab('library')
@@ -694,7 +716,7 @@ export function Workbench() {
   }
 
   async function scan(root: 'unpublished' | 'published') {
-    setError(''); setScanning(root); setDetail(null); setDetailError(''); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
+    setError(''); setScanning(root); setDetail(null); setDetailError(''); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([]); setShowAcceptanceDetails(false)
     try {
       const result = await call<{ packages: PkgSummary[] }>('scan', { root })
       setScans((prev) => ({ ...prev, [root]: result.packages }))
@@ -989,15 +1011,16 @@ export function Workbench() {
       const acceptance = await runAcceptanceCheck()
       const checked = acceptance.preflight
       if (!acceptance.ok || !checked?.snapshot || checked.snapshot.gate.blocks.length) {
+        setShowAcceptanceDetails(true)
+        if (acceptance.checks.get('login')?.ok === false) {
+          await openPlatformTab(platform.id).catch(() => {})
+          throw new Error(`已打开${platform.name}登录页面；登录后回到工作台，再点击一次“保存并打开平台”`)
+        }
         throw new Error(`${platform.name}验收前自检未全部通过，已阻止真实草稿操作`)
       }
-      const userConfirmed = window.confirm(
-        `确认仅为当前文章“${detail.title}”保存一篇${platform.name}草稿？\n\n这会向${platform.name}发送标题、正文和图片，但不会公开发布。`
-      )
-      if (!userConfirmed) {
-        setGuardedDraftNote(`已取消：未向${platform.name}保存草稿。`)
-        return
-      }
+      // 用户点击文案明确的主按钮即构成本次 saveDraft 授权；不再追加第二个
+      // 确认弹窗。服务端快照、Origin、Token 与真实动作闸门仍逐项复核。
+      const userConfirmed = true
       const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>(commands.prepare, {
         packageId: detail.packageId, userConfirmed,
       })
@@ -1035,9 +1058,14 @@ export function Workbench() {
       })
       setAcceptanceEvidence(evidence)
       await chrome.storage.local.set({ [ACCEPTANCE_EVIDENCE_KEY]: evidence })
-      setGuardedDraftNote(`${platform.name}：草稿已保存；HTML 保真 ${result.fidelityReport?.overall || 'PASS'}。请在任务中心打开草稿检查；不会自动公开发布。`)
+      const draftUrl = String(result.postUrl || '')
+      let opened = false
+      try { await openPlatformTab(platform.id, draftUrl); opened = true } catch { /* draft remains saved and auditable */ }
+      setGuardedDraftNote(opened
+        ? `${platform.name}草稿已保存并已打开；请在平台页面检查后手动发布。`
+        : `${platform.name}草稿已保存，但未能自动打开平台；可在任务中心打开草稿。`)
       await reloadServerTasks()
-      setTab('tasks')
+      if (!opened) setTab('tasks')
     } catch (e) {
       if (taskId) await call(commands.fail, { taskId, error: errMessage(e) }).catch(() => {})
       setGuardedDraftNote(errMessage(e))
@@ -1452,21 +1480,25 @@ export function Workbench() {
           </>}
 
           {openCap?.kind === 'guarded-draft' && <>
-            <h3>一键保存到{openCap.platform?.name}草稿（受保护单篇模式）</h3>
-            <p className="hint">点击主按钮后会自动完成只读预检和 10 项安全检查；全部通过时只需在弹窗中确认一次，随后保存一篇草稿并回读核验。公开发布、Excel 写入、文件移动/删除始终关闭。</p>
+            <h3>一键保存并打开{openCap.platform?.name}</h3>
+            <p className="hint">点击一次即可自动检查、保存草稿并打开对应平台页面，你检查后直接继续发布。按钮点击即为本次草稿授权；不会自动点击平台的最终发布，也不会写 Excel 或移动文件。</p>
             <div className="acceptance-checks">
               <div className="row">
-                <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || guardedDraftBusy}>{acceptanceBusy ? '正在检查准备状态…' : '检查准备状态（可选）'}</button>
-                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '10/10 自检通过。点击保存时仍会重新检查。' : '无需预先操作；点击保存时会自动检查。'}</span>
+                <button className="secondary" disabled={acceptanceBusy || guardedDraftBusy} onClick={async () => {
+                  if (!showAcceptanceDetails && !acceptanceChecks.length) await runAcceptanceCheck()
+                  setShowAcceptanceDetails((value) => !value)
+                }}>{showAcceptanceDetails ? '收起检查详情' : (acceptanceBusy ? '正在检查…' : '查看检查详情')}</button>
+                <span className={acceptanceReady ? 'ok-line' : 'hint'}>{acceptanceReady ? '自动检查已通过。' : '无需提前配置步骤；点击主按钮会自动检查。'}</span>
               </div>
-              {!!acceptanceChecks.length && <ul>{acceptanceChecks.map((item) => <li key={item.key} data-check={item.ok ? 'pass' : 'fail'}>
+              {showAcceptanceDetails && !!acceptanceChecks.length && <ul>{acceptanceChecks.map((item) => <li key={item.key} data-check={item.ok ? 'pass' : 'fail'}>
                 <strong>{item.ok ? 'PASS' : 'BLOCK'} · {item.label}</strong><small>{item.detail}</small>
               </li>)}</ul>}
             </div>
             <div className="row">
-              <button onClick={saveGuardedDraft} disabled={!compatibility.ok || guardedDraftBusy || acceptanceBusy}>{guardedDraftBusy ? '正在自动检查并保存草稿…' : `一键保存到${openCap.platform?.name}草稿`}</button>
-              <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>
-              <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成小样本验收材料（只读）'}</button>
+              <button onClick={saveGuardedDraft} disabled={!compatibility.ok || guardedDraftBusy || acceptanceBusy}>{guardedDraftBusy ? '正在检查并保存…' : `保存草稿并打开${openCap.platform?.name}`}</button>
+              {showAcceptanceDetails && <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || guardedDraftBusy}>{acceptanceBusy ? '正在重新检查…' : '重新检查'}</button>}
+              {showAcceptanceDetails && <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>}
+              {showAcceptanceDetails && <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成验收材料（只读）'}</button>}
             </div>
             {guardedDraftNote && <p className={guardedDraftNote.includes('已保存') ? 'ok' : 'warn'}>{guardedDraftNote}</p>}
           </>}
