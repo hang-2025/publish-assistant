@@ -12,6 +12,9 @@ import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, val
 
 const logger = createLogger('Netease')
 const EDITOR_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish'
+// 网易号网页通过 Axios 的 baseURL=/wemedia 访问这些相对接口。这里使用
+// window.fetch，必须显式补上同一前缀，否则会错误请求到 mp.163.com/article/*。
+const API_PREFIX = '/wemedia'
 
 type PageRequest = {
   url?: string
@@ -93,7 +96,7 @@ export class NeteaseAdapter extends CodeAdapter {
   async checkAuth(): Promise<AuthResult> {
     try {
       await this.ensureEditorTab()
-      const response = await this.pageRequest({ url: '/article/postpage.do', method: 'GET' })
+      const response = await this.pageRequest({ url: `${API_PREFIX}/article/postpage.do`, method: 'GET' })
       if (!response.ok) return { isAuthenticated: false }
       const account = accountRecord(parseJson(response.text))
       if (!account) return { isAuthenticated: false }
@@ -146,14 +149,14 @@ export class NeteaseAdapter extends CodeAdapter {
       if (form.operation !== 'saveDraft') throw new Error('网易号草稿安全参数异常，已阻止请求')
 
       await options?.onDraftStage?.('saving_draft')
-      const saveResponse = await this.pageRequest({ url: '/article/status/api/publishV2.do', method: 'POST', form })
+      const saveResponse = await this.pageRequest({ url: `${API_PREFIX}/article/status/api/publishV2.do`, method: 'POST', form })
       if (!saveResponse.ok) throw new Error(`网易号保存草稿失败: HTTP ${saveResponse.status}`)
       const envelope = parseJson(saveResponse.text)
       const postId = savedDocId(envelope)
       if (!postId) throw new Error(String(envelope?.message || envelope?.msg || '网易号保存草稿响应缺少有效草稿 ID'))
 
       const readResponse = await this.pageRequest({
-        url: `/article/editpage.do?postId=${encodeURIComponent(postId)}&wemediaId=${encodeURIComponent(this.accountId)}&mediaId=${encodeURIComponent(this.accountId)}`,
+        url: `${API_PREFIX}/article/editpage.do?postId=${encodeURIComponent(postId)}&wemediaId=${encodeURIComponent(this.accountId)}&mediaId=${encodeURIComponent(this.accountId)}`,
         method: 'GET',
       })
       if (!readResponse.ok) throw new Error(`网易号草稿回读失败: HTTP ${readResponse.status}`)
@@ -180,7 +183,7 @@ export class NeteaseAdapter extends CodeAdapter {
   }
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
-    const response = await this.pageRequest({ url: '/api/v3/upload/picupload', method: 'POST', imageSource: src })
+    const response = await this.pageRequest({ url: `${API_PREFIX}/api/v3/upload/picupload`, method: 'POST', imageSource: src })
     if (!response.ok) throw new Error(`网易号图片上传失败: HTTP ${response.status}`)
     const envelope = parseJson(response.text)
     if (![1, 200].includes(Number(envelope?.code))) throw new Error(String(envelope?.message || envelope?.msg || '网易号图片上传失败'))
@@ -203,7 +206,7 @@ export class NeteaseAdapter extends CodeAdapter {
 
   private async pageRequest(request: PageRequest): Promise<PageResponse> {
     const tabId = await this.ensureEditorTab()
-    return this.runtime.tabs!.executeScript<PageResponse, [PageRequest]>(tabId, async (input) => {
+    const result = await this.runtime.tabs!.executeScript<PageResponse | null, [PageRequest]>(tabId, async (input) => {
       if (input.guardian) {
         if (typeof neg === 'undefined' || typeof neg?.getToken !== 'function') {
           return { ok: false, status: 0, text: JSON.stringify({ error: 'guardian-unavailable' }) }
@@ -228,5 +231,9 @@ export class NeteaseAdapter extends CodeAdapter {
       const response = await fetch(input.url || '', init)
       return { ok: response.ok, status: response.status, text: await response.text() }
     }, [request])
+    if (!result || typeof result.ok !== 'boolean' || typeof result.status !== 'number' || typeof result.text !== 'string') {
+      throw new Error('网易号页面未返回登录检查结果；请刷新网易号创作页并确认账号仍已登录')
+    }
+    return result
   }
 }

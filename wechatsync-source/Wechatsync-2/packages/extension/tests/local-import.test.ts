@@ -445,14 +445,14 @@ describe('guarded NetEase draft adapter', () => {
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
         if (request.guardian) return { ok: true, status: 200, text: JSON.stringify({ code: 200, token: 'official-guardian-token' }) }
-        if (request.url === '/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88', mediaName: '网易验收号' } }) }
+        if (request.url === '/wemedia/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88', mediaName: '网易验收号' } }) }
         if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { url: '//dingyue.ws.126.net/test.jpg' } }) }
-        if (request.url === '/article/status/api/publishV2.do') {
+        if (request.url === '/wemedia/article/status/api/publishV2.do') {
           savedForm = request.form
           savedContent = request.form.content
           return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: 'docId=doc_13579&pkId=9' }) }
         }
-        if (request.url.startsWith('/article/editpage.do')) return {
+        if (request.url.startsWith('/wemedia/article/editpage.do')) return {
           ok: true, status: 200,
           text: JSON.stringify({ code: 1, data: { post: { docid: 'doc_13579', title: '网易测试', content: savedContent } } }),
         }
@@ -479,6 +479,21 @@ describe('guarded NetEase draft adapter', () => {
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
   })
 
+  it('fails closed with a useful message when the page script returns no result', async () => {
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async () => null),
+    }
+    await adapter.init(runtime)
+
+    const auth = await adapter.checkAuth()
+
+    expect(auth.isAuthenticated).toBe(false)
+    expect(auth.error).toContain('网易号页面未返回登录检查结果')
+  })
+
   it('stops before saving when the official guardian token is unavailable', async () => {
     const adapter = new NeteaseAdapter()
     const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
@@ -486,7 +501,7 @@ describe('guarded NetEase draft adapter', () => {
       query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
-        if (request.url === '/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88' } }) }
+        if (request.url === '/wemedia/article/postpage.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88' } }) }
         if (request.guardian) return { ok: false, status: 0, text: '{}' }
         throw new Error('save endpoint must not be called')
       }),

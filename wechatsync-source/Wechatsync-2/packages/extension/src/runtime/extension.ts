@@ -241,8 +241,11 @@ export class ExtensionRuntime implements RuntimeInterface {
         args: args as unknown[],
       })
 
-      const result = results[0]?.result as T
-      return result
+      const result = results[0]?.result
+      if (result === null || result === undefined) {
+        throw new Error('页面脚本未返回执行结果；请刷新对应平台页面后重试')
+      }
+      return result as T
     },
   }
 
