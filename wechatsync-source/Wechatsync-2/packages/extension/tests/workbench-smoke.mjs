@@ -14,9 +14,9 @@ const packages = [
   { packageId: 'pkg-other-category', relativePath: '主流平台/zhihu/浪涌保护器/2026-09-04/分类包', segments: ['主流平台', 'zhihu', '浪涌保护器', '2026-09-04', '分类包'], title: '浪涌保护器选型要点', imageCount: 5, altCount: 5, issueCount: 0, issues: [], notes: [] },
   { packageId: 'pkg-conflict', relativePath: '主流平台/sohu/智能雷暴仪/2026-09-05/冲突包', segments: ['主流平台', 'sohu', '智能雷暴仪', '2026-09-05', '冲突包'], title: 'ALT 冲突测试包', imageCount: 1, altCount: 1, issueCount: 1, issues: ['ALT 冲突'], notes: [] },
 ]
-function detail(conflict = false) {
+function detail(conflict = false, packageId = conflict ? 'pkg-conflict' : 'pkg-normal') {
   return {
-    packageId: conflict ? 'pkg-conflict' : 'pkg-normal', root: 'unpublished',
+    packageId, root: 'unpublished',
     relativePath: conflict ? packages[1].relativePath : packages[0].relativePath,
     title: conflict ? packages[1].title : packages[0].title,
     seo: { 内容栏目: '智能雷暴仪', SEO描述: '阶段1A 模拟数据' },
@@ -41,6 +41,9 @@ const server = http.createServer(async (req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 
 let browser
+let scanCount = 0
+let archiveCommandCount = 0
+const archivedPackageIds = new Set()
 try {
   browser = await chromium.launch({ channel: 'chrome', headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1200 } })
@@ -60,23 +63,43 @@ try {
     const req = route.request()
     if (req.url().endsWith('/api/health')) return route.fulfill({ json: { ok: true, version: 'test', protocol: { name: 'yizao-local-service', version: 1 } } })
     const message = req.postDataJSON()
-    if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' } } } })
-    if (message.command === 'scan') return route.fulfill({ json: { ok: true, packages } })
-    if (message.command === 'getPackage') return route.fulfill({ json: { ok: true, ...detail(message.payload.packageId === 'pkg-conflict') } })
+    if (message.command === 'getConfig') return route.fulfill({ json: { ok: true, roots: { unpublished: { configured: true, resolved: 'C:\\模拟目录\\未发布' }, published: { configured: true, resolved: 'C:\\模拟目录\\已发布' }, archive: { configured: true, resolved: 'C:\\模拟目录\\已归档' } } } })
+    if (message.command === 'scan') {
+      if (message.payload.root === 'archive') {
+        return route.fulfill({ json: { ok: true, packages: packages.filter((item) => archivedPackageIds.has(item.packageId)) } })
+      }
+      scanCount += 1
+      const scanned = (scanCount > 1
+        ? packages.map((item) => item.packageId === 'pkg-normal' ? { ...item, packageId: 'pkg-normal-refreshed' } : item)
+        : packages).filter((item) => !archivedPackageIds.has(item.packageId))
+      return route.fulfill({ json: { ok: true, packages: scanned } })
+    }
+    if (message.command === 'archivePackage') {
+      archiveCommandCount += 1
+      archivedPackageIds.add(message.payload.packageId)
+      return route.fulfill({ json: { ok: true, moved: true, excelWritten: false, notice: '已移动到已归档目录；未写 Excel，未触发平台发布。' } })
+    }
+    if (message.command === 'getPackage') {
+      if (message.payload.packageId === 'pkg-normal') return route.fulfill({ status: 400, json: { ok: false, error: '未知或已过期的包 ID（服务重启后请重新扫描）' } })
+      const conflict = message.payload.packageId === 'pkg-conflict'
+      return route.fulfill({ json: { ok: true, ...detail(conflict, message.payload.packageId) } })
+    }
     if (message.command === 'getTasks') return route.fulfill({ json: { ok: true, count: 0, tasks: [] } })
     return route.fulfill({ status: 400, json: { ok: false, error: 'unexpected command' } })
   })
 
   await page.goto(`http://127.0.0.1:${server.address().port}/src/workbench/index.html`)
-  await page.getByRole('button', { name: '扫描未发布' }).click()
-  await page.getByRole('button', { name: /智能雷暴仪预警应用/ }).waitFor()
+  await page.getByRole('button', { name: '扫描未归档' }).click()
+  await page.locator('button.pkg', { hasText: '智能雷暴仪预警应用' }).waitFor()
   assert.equal(await page.locator('.source-group').count(), 2, '应按知乎/搜狐分成两个平台区块')
   assert.equal(await page.locator('.category-group').count(), 3, '知乎两个产品分类，搜狐一个产品分类')
   // 知乎/搜狐均为受保护单篇草稿入口；绝不能在未执行时出现真实成功文案。
   assert.equal(await page.locator('.pkg').count(), 4, '应显示 4 张文章卡片')
+  assert.equal(await page.locator('.pkg-archive').count(), 4, '每张未归档文章卡片应有一个独立的小圆圈归档入口')
   const pkgActions = page.locator('.pkg-action')
   assert.equal(await pkgActions.count(), 4, '每张卡片都有一个能力动作文案')
-  for (let i = 0; i < 4; i++) assert.equal((await pkgActions.nth(i).innerText()).trim(), '一键发布（打开平台继续）', '知乎/搜狐卡片一律为一键保存并打开平台入口')
+  for (let i = 0; i < 3; i++) assert.equal((await pkgActions.nth(i).innerText()).trim(), '保存草稿并打开知乎', '知乎卡片应直接执行保存并打开平台')
+  assert.equal((await pkgActions.nth(3).innerText()).trim(), '保存草稿并打开搜狐号', '搜狐卡片应直接执行保存并打开平台')
   assert.equal(await page.locator('.tag').count() > 0, true, '卡片应有能力标签')
   const libraryBody = await page.locator('main').innerText()
   assert.equal(libraryBody.includes('一键发布成功'), false, '绝不能出现「一键发布成功」')
@@ -89,9 +112,10 @@ try {
   assert.equal(await page.locator('.pkg').count(), 1, '平台筛选应只显示所选平台')
   await page.getByRole('button', { name: '清除筛选' }).click()
   assert.equal(await page.locator('.pkg').count(), 4, '清除筛选后应恢复全部文章')
-  await page.getByRole('button', { name: /智能雷暴仪预警应用/ }).click()
+  await page.locator('.pkg-wrap').filter({ hasText: '智能雷暴仪预警应用' }).getByRole('button', { name: '查看详情' }).click()
   await page.locator('details.article-inspection > summary').click()
   await page.getByText('正文出现位置映射（1）').waitFor()
+  assert.equal(scanCount, 2, '包 ID 过期时应自动重新扫描并按原相对路径恢复同一篇文章')
   assert.equal(await page.getByText(/雷暴仪现场已有图注/).count() > 0, true)
   const frame = page.frameLocator('iframe[title="正文预览"]')
   await frame.locator('img').waitFor()
@@ -100,13 +124,24 @@ try {
   assert.equal(await frame.locator('figcaption').textContent(), '雷暴仪现场已有图注')
   await page.screenshot({ path: path.join(extensionRoot, 'workbench-preview.png'), fullPage: true })
 
-  await page.getByRole('button', { name: /ALT 冲突测试包/ }).click()
+  await page.locator('.pkg-wrap').filter({ hasText: 'ALT 冲突测试包' }).getByRole('button', { name: '查看详情' }).click()
   await page.locator('details.article-inspection > summary').click()
   await page.getByText('ALT 文案冲突，模拟校验会停止').waitFor()
-  const guardedButton = page.getByRole('button', { name: /保存草稿并打开搜狐号/ })
+  const guardedButton = page.getByRole('button', { name: '保存草稿并打开搜狐号', exact: true })
   await guardedButton.waitFor()
   assert.equal(await guardedButton.isDisabled(), true, '版本/服务检查未通过时受保护草稿按钮必须禁用')
   assert.equal(await page.getByText(/草稿已保存/).count(), 0, '未执行时不得显示草稿成功')
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByLabel('将《机场雷电预警系统怎么选》移动到已归档').click()
+  await page.getByText('已移动到已归档目录；未写 Excel，未触发平台发布。').waitFor()
+  assert.equal(archiveCommandCount, 1, '点击小圆圈只调用一次归档命令')
+  assert.equal(await page.locator('.pkg-archive').count(), 3, '已归档卡片不再显示可重复归档的小圆圈')
+  assert.equal(await page.locator('.pkg[data-cap="archived"]').count(), 0, '未归档页面不得混入已归档文章')
+  await page.getByRole('button', { name: '已归档文章', exact: true }).click()
+  assert.equal(await page.locator('.pkg[data-cap="archived"]', { hasText: '机场雷电预警系统怎么选' }).count(), 1, '文章应移动到已归档分组并变为只读')
+  assert.equal(await page.locator('.pkg-archive').count(), 0, '已归档页面不得提供再次归档入口')
+  assert.equal(await page.getByRole('heading', { name: '未归档文章' }).count(), 0, '未归档与已归档必须是两个独立页面')
 
   // 人工构造一个“重启时仍在保存”的任务，刷新后必须变为结果未知且不自动重发。
   await page.evaluate(async () => {

@@ -431,7 +431,7 @@ export class ZhihuAdapter extends CodeAdapter {
    * 等待图片处理完成
    */
   private async waitForImageReady(imageId: string): Promise<{ original_hash: string }> {
-    const maxRetries = 10
+    const maxRetries = 30
     for (let i = 0; i < maxRetries; i++) {
       const response = await this.runtime.fetch(`https://api.zhihu.com/images/${imageId}`, {
         credentials: 'include',

@@ -237,17 +237,27 @@ export function checkRealActionGate({ action, platform, authorization } = {}) {
     && authorization?.snapshotVerified === true;
   const guardedDraftAllowed = stage3DraftAllowed || stage4SohuDraftAllowed || stage5ToutiaoDraftAllowed
     || stage6NeteaseDraftAllowed || stage7XiaohongshuDraftAllowed;
+  const manualArchiveAllowed = actionKey === 'archiveMove'
+    && Boolean(platformInfo)
+    && authorization?.stage === '8-manual-archive'
+    && authorization?.userConfirmed === true
+    && authorization?.packageVerified === true
+    && authorization?.sourceRoot === 'unpublished'
+    && authorization?.targetRoot === 'archive';
+  const allowed = guardedDraftAllowed || manualArchiveAllowed;
   return {
-    allowed: guardedDraftAllowed,
+    allowed,
     action: actionKey,
     actionName: ACTIONS[actionKey] || actionKey || '未知动作',
     platform: platformKey,
     platformName: platformInfo?.name || platformKey || '未知平台',
     policy,
-    reason: guardedDraftAllowed
+    reason: manualArchiveAllowed
+      ? '仅允许把服务端已复核的文章包从未归档目录移动到已归档目录；不写 Excel，不触发平台发布。'
+      : guardedDraftAllowed
       ? `仅允许当前已确认且快照复核通过的单篇${platformInfo?.name || platformKey}保存草稿动作；不包含公开发布。`
       : knownAction
-      ? '真实动作默认关闭。仅独立验收阶段中经用户当次确认、快照复核通过的知乎、搜狐号、头条号、网易号或小红书 saveDraft 可获准。'
+      ? '真实动作默认关闭。仅受保护的单篇保存草稿，或经用户当次确认且由服务端复核的“未归档 → 已归档”移动可获准。'
       : '未知真实动作不在允许清单中。',
     requirements: BASE_REQUIREMENTS,
   };

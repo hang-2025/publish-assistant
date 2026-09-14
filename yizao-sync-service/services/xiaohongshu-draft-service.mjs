@@ -29,10 +29,14 @@ function assertSameSnapshot(task, current) {
   }
 }
 
-function canSafelyRetryBeforeSave(task) {
-  if (!task || task.status !== TASK_STATUS.FAILED || task.draftResult) return false;
-  const unsafeStages = new Set([TASK_STATUS.SAVING_DRAFT, TASK_STATUS.DRAFT_SAVED, TASK_STATUS.WAITING_CONFIRMATION]);
-  return Array.isArray(task.history) && !task.history.some((entry) => unsafeStages.has(entry?.stage));
+// 用户明确要求允许重复保存：仅当上一个任务仍在执行中时阻止（防双击连点）；
+// 终态任务（草稿已保存/已发布/失败/已取消）允许再次确认后创建新任务。
+function isPreviousInFlight(task) {
+  if (!task) return false;
+  return ![
+    TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
+    TASK_STATUS.FAILED, TASK_STATUS.CANCELLED,
+  ].includes(task.status);
 }
 
 function sanitizeFidelityReport(report) {
@@ -93,8 +97,8 @@ export class XiaohongshuDraftService {
       task.taskKey === baseTaskKey || String(task.taskKey || '').startsWith(`${baseTaskKey}:retry:`)
     ));
     const previous = related.at(-1) || null;
-    if (previous && !canSafelyRetryBeforeSave(previous)) {
-      return { started: false, reason: previous.status === TASK_STATUS.FAILED ? 'manual-review-required' : 'exists', task: previous };
+    if (previous && isPreviousInFlight(previous)) {
+      return { started: false, reason: 'exists', task: previous };
     }
     const taskKey = previous ? `${baseTaskKey}:retry:${related.length + 1}` : baseTaskKey;
     const created = await this.store.createTask({
@@ -107,7 +111,7 @@ export class XiaohongshuDraftService {
     if (!created.created) return { started: false, reason: created.reason, task: created.task, busy: created.busy };
     if (previous) {
       created.task.retryOfTaskId = previous.taskId;
-      created.task.retryReason = '前次失败发生在小红书草稿保存请求之前；保留原审计记录后由用户重新确认重试';
+      created.task.retryReason = '用户在当前操作中再次明确确认保存草稿；保留原任务审计记录后创建新任务';
       await this.store.saveTask(created.task);
     }
     await this.store.transitionStatus(created.task.taskId, TASK_STATUS.VALIDATING, '服务端复核发布包与不可变快照');

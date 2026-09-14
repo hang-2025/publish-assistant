@@ -8,11 +8,10 @@ import { confirmArchivedSimulated as confirmLocalArchivedSimulated, confirmExcel
 /**
  * 易造发布助手 · 工作台（知乎、搜狐号、头条号单篇保存草稿进入受保护真实闭环）
  * - 只读扫描本地文章目录、安全预览正文、图片与 ALT/图注对照；
- * - 官网/百家号：经本地服务生成「执行预览与发送快照」，可运行「模拟发布流程」，
- *   终态停在「等待用户最终提交（模拟）」，绝不自动点击最终发布；
+ * - 官网/百家号发布入口已从工作台移除；历史服务能力与任务数据不删除；
  * - 知乎、搜狐号、头条号：可在用户当次确认与服务端快照复核后保存一篇草稿；
  * - 知乎、搜狐、头条、网易与小红书仅提供受保护的单篇草稿入口；
- * - 不公开发布、不修改 Excel、不移动文件；受保护草稿内部图片上传以外的真实上传全部关闭。
+ * - 不公开发布、不修改 Excel；用户当次确认后可将单个文章包从未归档目录移动到已归档目录。
  */
 
 interface PkgSummary {
@@ -102,7 +101,7 @@ function draftPreview(platform: { id: string; name: string }): Capability {
 }
 function guardedDraft(platform: { id: string; name: string }): Capability {
   return {
-    kind: 'guarded-draft', label: '一键发布（打开平台继续）', platform,
+    kind: 'guarded-draft', label: `保存草稿并打开${platform.name}`, platform,
     tags: ['单篇', '保存草稿', '禁止公开发布'],
     explain: `点击后自动检查并保存一篇草稿，再打开${platform.name}页面供你检查并完成发布；不会自动点击平台的最终发布。`,
   }
@@ -117,6 +116,16 @@ function platformFromSegments(segments: string[], catalog: CapabilityPlatform[])
   return catalog.find((item) => candidates.has(item.id.toLowerCase())
     || candidates.has(item.name.toLowerCase())
     || item.aliases?.some((alias) => candidates.has(alias.toLowerCase()))) || null
+}
+
+function isRemovedPublishingPackage(pkg: Pick<PkgSummary, 'segments'>) {
+  const [kind = '', source = ''] = pkg.segments
+  return kind === '官网' || /^(?:www\.)?(?:eyzao\.(?:com|cn)|yzfanglei\.com)$/i.test(source)
+    || source.toLowerCase() === 'baijiahao' || source === '百家号'
+}
+
+function isRemovedPublishingPlatform(platform: Pick<CapabilityPlatform, 'id' | 'group'>) {
+  return platform.group === '官网' || platform.id === 'baijiahao'
 }
 
 /** 按服务端统一能力决定动作；目录只负责提供平台标识。 */
@@ -171,21 +180,7 @@ interface CapabilityPlatformView extends CapabilityPlatform {
 
 /** 平台页把三个官网聚合展示，真实闸门仍逐站点检查。 */
 function groupCapabilityPlatforms(platforms: CapabilityPlatform[]): CapabilityPlatformView[] {
-  const official = platforms.filter((platform) => platform.group === '官网')
-  const others = platforms.filter((platform) => platform.group !== '官网')
-  if (!official.length) return others
-  const unique = (items: string[]) => [...new Set(items)]
-  return [{
-    ...official[0],
-    id: 'official',
-    name: '官方网站',
-    group: '官网',
-    currentActions: unique(official.flatMap((platform) => platform.currentActions)),
-    plannedActions: unique(official.flatMap((platform) => platform.plannedActions)),
-    evidence: unique(official.flatMap((platform) => platform.evidence)),
-    risks: unique(official.flatMap((platform) => platform.risks)),
-    sites: official.map(({ id, name }) => ({ id, name })),
-  }, ...others]
+  return platforms.filter((platform) => !isRemovedPublishingPlatform(platform))
 }
 
 function packageDate(pkg: PkgSummary): string {
@@ -541,7 +536,7 @@ export function Workbench() {
   const [serviceInfo, setServiceInfo] = useState<ServiceHealth | null>(null)
   const [tokenInput, setTokenInput] = useState('')
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'library' | 'config' | 'tasks' | 'platforms' | 'safety'>('library')
+  const [tab, setTab] = useState<'library' | 'archive' | 'config' | 'tasks' | 'platforms' | 'safety'>('library')
   const [roots, setRoots] = useState<{ unpublished?: string; published?: string; archive?: string }>({})
   const [rootInputs, setRootInputs] = useState({ unpublished: '', published: '', archive: '' })
   const [excel, setExcel] = useState<{ planPath?: string; sheetName?: string }>({})
@@ -553,6 +548,8 @@ export function Workbench() {
   const [publishLinks, setPublishLinks] = useState<Record<string, string>>({})
   const [scans, setScans] = useState<Record<string, PkgSummary[]>>({})
   const [scanning, setScanning] = useState('')
+  const [archivingPackageId, setArchivingPackageId] = useState('')
+  const [archiveNotice, setArchiveNotice] = useState('')
   const [libraryPlatform, setLibraryPlatform] = useState('all')
   const [librarySearch, setLibrarySearch] = useState('')
   const [detail, setDetail] = useState<PkgDetail | null>(null)
@@ -575,23 +572,37 @@ export function Workbench() {
   const [checklist, setChecklist] = useState<RealExecutionChecklist | null>(null)
   const [checklistBusy, setChecklistBusy] = useState(false)
   const [checklistNote, setChecklistNote] = useState('')
-  const [guardedDraftBusy, setGuardedDraftBusy] = useState(false)
-  const [guardedDraftNote, setGuardedDraftNote] = useState('')
+  // 按文章包记录保存进度：不同平台/文章可同时保存，同一篇文章防重复点击。
+  const [guardedDraftBusyIds, setGuardedDraftBusyIds] = useState<string[]>([])
+  const [guardedDraftAbortedIds, setGuardedDraftAbortedIds] = useState<string[]>([])
+  const [guardedDraftNotes, setGuardedDraftNotes] = useState<Record<string, string>>({})
+  const guardedDraftAbortRef = useRef<Set<string>>(new Set())
+  const guardedDraftTaskRef = useRef<Map<string, { fail: string; taskId: string }>>(new Map())
+  const guardedDraftAbortControllers = useRef<Map<string, AbortController>>(new Map())
+  const packageBusy = (id?: string | null) => Boolean(id && guardedDraftBusyIds.includes(id))
+  const packageAborted = (id?: string | null) => Boolean(id && guardedDraftAbortedIds.includes(id))
+  const setPackageNote = (id: string, text: string) => setGuardedDraftNotes((prev) => ({ ...prev, [id]: text }))
+  const [quickDraftPackageId, setQuickDraftPackageId] = useState('')
+  const [quickDraftRequest, setQuickDraftRequest] = useState('')
   const [acceptanceChecks, setAcceptanceChecks] = useState<AcceptanceCheck[]>([])
   const [showAcceptanceDetails, setShowAcceptanceDetails] = useState(false)
   const [acceptanceBusy, setAcceptanceBusy] = useState(false)
   const [acceptanceEvidence, setAcceptanceEvidence] = useState<AcceptanceEvidence | null>(null)
   const pollRef = useRef<number>()
-  const archiveGroups = useMemo(() => archiveGroupsFromTasks(serverTasks, tasks), [serverTasks, tasks])
+  const visibleServerTasks = useMemo(() => serverTasks.filter((task) => (
+    task.mode !== 'simulate' || !['eyzao.com', 'eyzao.cn', 'yzfanglei.com', 'baijiahao'].includes(task.platform)
+  )), [serverTasks])
+  const archiveGroups = useMemo(() => archiveGroupsFromTasks(visibleServerTasks, tasks), [visibleServerTasks, tasks])
   const compatibility = serviceCompatibility(serviceInfo)
   const acceptanceReady = acceptanceChecksPassed(acceptanceChecks)
   const extensionVersion = chrome.runtime?.getManifest?.().version || 'development-test'
   const platformCatalog = capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES
   const capabilityPlatformViews = useMemo(() => groupCapabilityPlatforms(capabilities?.platforms || []), [capabilities])
+  const activeLibraryRoot = tab === 'archive' ? 'archive' : 'unpublished'
   const libraryPlatformOptions = useMemo(() => {
-    const groups = groupPackages(Object.values(scans).flat(), platformCatalog)
+    const groups = groupPackages((scans[activeLibraryRoot] || []).filter((pkg) => !isRemovedPublishingPackage(pkg)), platformCatalog)
     return groups.map(({ key, name }) => ({ key, name }))
-  }, [scans, platformCatalog])
+  }, [scans, activeLibraryRoot, platformCatalog])
   const filterLibraryPackages = (packages: PkgSummary[]) => {
     const query = librarySearch.trim().toLocaleLowerCase('zh-CN')
     return packages.filter((pkg) => {
@@ -715,7 +726,7 @@ export function Workbench() {
     } catch (e) { setError(errMessage(e)) }
   }
 
-  async function scan(root: 'unpublished' | 'published') {
+  async function scan(root: 'unpublished' | 'published' | 'archive') {
     setError(''); setScanning(root); setDetail(null); setDetailError(''); setOpenCap(null); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([]); setShowAcceptanceDetails(false)
     try {
       const result = await call<{ packages: PkgSummary[] }>('scan', { root })
@@ -724,18 +735,82 @@ export function Workbench() {
     finally { setScanning('') }
   }
 
-  async function openPackage(pkg: PkgSummary) {
+  async function archivePackage(pkg: PkgSummary) {
+    if (!pkg.packageId || archivingPackageId) return
+    const confirmed = window.confirm(`确定将《${pkg.title}》移动到“已归档”吗？\n\n只移动文章包，不写 Excel，也不会触发平台发布。`)
+    if (!confirmed) return
+    setError(''); setArchiveNotice(''); setArchivingPackageId(pkg.packageId)
+    try {
+      const result = await call<{ notice?: string }>('archivePackage', { packageId: pkg.packageId, userConfirmed: true })
+      const [unpublished, archive] = await Promise.all([
+        call<{ packages: PkgSummary[] }>('scan', { root: 'unpublished' }),
+        call<{ packages: PkgSummary[] }>('scan', { root: 'archive' }),
+      ])
+      setScans((prev) => ({ ...prev, unpublished: unpublished.packages, archive: archive.packages }))
+      if (detail?.packageId === pkg.packageId) { setDetail(null); setOpenCap(null) }
+      setArchiveNotice(result.notice || `《${pkg.title}》已归档。`)
+    } catch (e) {
+      setError(errMessage(e))
+    } finally {
+      setArchivingPackageId('')
+    }
+  }
+
+  async function refreshExpiredPackage(pkg: PkgSummary): Promise<PkgSummary | null> {
+    const root = (['unpublished', 'published', 'archive'] as const).find((candidate) =>
+      scans[candidate]?.some((item) => item === pkg || item.packageId === pkg.packageId))
+    if (!root) return null
+    const result = await call<{ packages: PkgSummary[] }>('scan', { root })
+    setScans((prev) => ({ ...prev, [root]: result.packages }))
+    return result.packages.find((item) => item.packageId && item.relativePath === pkg.relativePath) || null
+  }
+
+  async function openPackage(pkg: PkgSummary, quickDraft = false) {
     if (!pkg.packageId) return
     setDetail(null); setDetailError(''); setOfficialPreview(null); setOfficialNote(''); setRegistrationPreview(null); setRegistrationNote(''); setPreflight(null); setPreflightNote(''); setChecklist(null); setChecklistNote(''); setAcceptanceChecks([])
     try {
       const currentCapabilities = capabilities || { phase: 'compatibility', realActionsEnabled: false, requirementsBeforeRealActions: [], platforms: FALLBACK_PLATFORM_CAPABILITIES }
-      setOpenCap(capabilityFor(pkg.segments, currentCapabilities.platforms))
+      const archivedPackage = (scans.archive || []).some((item) => item === pkg || item.packageId === pkg.packageId)
+      setOpenCap(archivedPackage ? null : capabilityFor(pkg.segments, currentCapabilities.platforms))
       setDetail(await call<PkgDetail>('getPackage', { packageId: pkg.packageId }))
     } catch (e) {
-      setDetailError(errMessage(e))
+      let message = errMessage(e)
+      if (message.includes('未知或已过期的包 ID')) {
+        try {
+          const refreshed = await refreshExpiredPackage(pkg)
+          if (refreshed?.packageId) {
+            const refreshedDetail = await call<PkgDetail>('getPackage', { packageId: refreshed.packageId })
+            const refreshedFromArchive = (scans.archive || []).some((item) => item === pkg || item.relativePath === refreshed.relativePath)
+            setOpenCap(refreshedFromArchive ? null : capabilityFor(refreshed.segments, (capabilities || { platforms: FALLBACK_PLATFORM_CAPABILITIES }).platforms))
+            setDetail(refreshedDetail)
+            if (quickDraft) {
+              setQuickDraftPackageId(refreshed.packageId)
+              setQuickDraftRequest(refreshed.packageId)
+            }
+            return
+          }
+          message = '服务已重新扫描，但未找到原文章包；请确认文章目录没有移动或改名'
+        } catch (retryError) {
+          message = `自动重新扫描失败：${errMessage(retryError)}`
+        }
+      }
+      setDetailError(message)
+      if (quickDraft) {
+        setQuickDraftRequest('')
+        if (detail?.packageId) setPackageNote(detail.packageId, message)
+      }
       await markPackageIdsStale()
       setTasks(await refreshTasks())
     }
+  }
+
+  async function startQuickGuardedDraft(pkg: PkgSummary) {
+    if (!pkg.packageId || packageBusy(pkg.packageId)) return
+    setQuickDraftPackageId(pkg.packageId)
+    setQuickDraftRequest(pkg.packageId)
+    setPackageNote(pkg.packageId, '')
+    setShowAcceptanceDetails(false)
+    await openPackage(pkg, true)
   }
 
   async function pair() {
@@ -908,7 +983,7 @@ export function Workbench() {
 
   async function runAcceptanceCheck() {
     const platform = openCap?.platform
-    setAcceptanceBusy(true); setGuardedDraftNote(''); setDetailError('')
+    setAcceptanceBusy(true); if (detail?.packageId) setPackageNote(detail.packageId, ''); setDetailError('')
     const checks = new Map<string, AcceptanceCheck>()
     const mark = (key: string, label: string, ok: boolean, detailText: string) => checks.set(key, { key, label, ok, detail: detailText })
     let checked: PreflightResponse | null = null
@@ -1005,10 +1080,15 @@ export function Workbench() {
       xiaohongshu: { prepare: 'prepareXiaohongshuDraft', begin: 'beginXiaohongshuDraft', fail: 'failXiaohongshuDraft', message: 'YIZAO_XIAOHONGSHU_DRAFT' },
     } as const
     const commands = commandsByPlatform[platform.id]
-    setGuardedDraftBusy(true); setGuardedDraftNote(''); setDetailError('')
+    const pkgId = detail.packageId
+    const controller = new AbortController()
+    setGuardedDraftBusyIds((prev) => [...new Set([...prev, pkgId])])
+    setPackageNote(pkgId, ''); setDetailError('')
+    guardedDraftAbortControllers.current.set(pkgId, controller)
     let taskId = ''
     try {
       const acceptance = await runAcceptanceCheck()
+      if (guardedDraftAbortRef.current.has(pkgId)) throw new Error('已手动中止保存')
       const checked = acceptance.preflight
       if (!acceptance.ok || !checked?.snapshot || checked.snapshot.gate.blocks.length) {
         setShowAcceptanceDetails(true)
@@ -1023,7 +1103,7 @@ export function Workbench() {
       const userConfirmed = true
       const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>(commands.prepare, {
         packageId: detail.packageId, userConfirmed,
-      })
+      }, { signal: controller.signal })
       if (!prepared.started || !prepared.task) {
         if (prepared.reason === 'exists') throw new Error('相同文章与快照已有任务，已阻止重复保存')
         if (prepared.reason === 'manual-review-required') throw new Error(`前次${platform.name}任务已进入保存阶段，结果可能已写入草稿箱；请先人工核对，已阻止重复保存`)
@@ -1031,12 +1111,28 @@ export function Workbench() {
         throw new Error(prepared.reason || `未能创建${platform.name}草稿任务`)
       }
       taskId = prepared.task.taskId
+      guardedDraftTaskRef.current.set(pkgId, { fail: commands.fail, taskId })
       const snapshotId = prepared.task.snapshotId
-      await call(commands.begin, { taskId, snapshotId, userConfirmed })
-      const response = await chrome.runtime.sendMessage({
-        type: commands.message,
-        payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
-      }) as { result?: Record<string, unknown>; error?: string }
+      await call(commands.begin, { taskId, snapshotId, userConfirmed }, { signal: controller.signal })
+      if (guardedDraftAbortRef.current.has(pkgId)) throw new Error('已手动中止保存；若页面填写已开始，是否写入草稿以平台草稿箱为准')
+      let response: { result?: Record<string, unknown>; error?: string }
+      try {
+        response = await chrome.runtime.sendMessage({
+          type: commands.message,
+          payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
+        }) as { result?: Record<string, unknown>; error?: string }
+      } catch (error) {
+        const text = String((error as Error)?.message || '')
+        if (text.includes('message channel closed') || text.includes('Receiving end does not exist')) {
+          throw new Error(`${platform.name}页面的填写流程仍在后台进行时连接中断（后台页被浏览器回收或页面已离开）。请不要关闭/刷新${platform.name}编辑页，稍后重新点击保存即可；草稿是否已写入请以${platform.name}草稿箱为准。`)
+        }
+        throw error
+      }
+      // 中止请求到达时若页面已返回成功结果，则照常完成归档——此时草稿实际
+      // 已写入平台，按失败处理反而会失真。
+      if (guardedDraftAbortRef.current.has(pkgId) && !response?.result) {
+        throw new Error('已手动中止保存；若页面填写已开始，是否写入草稿以平台草稿箱为准')
+      }
       if (response?.error || !response?.result) throw new Error(response?.error || `${platform.name}草稿 Adapter 未返回结果`)
       const result = response.result as { postId?: string; postUrl?: string; draftOnly?: boolean; readBackVerified?: boolean; fidelityVerified?: boolean; fidelityReport?: FidelityReport }
       const completed = await call<{ task: ServerTask }>('getTask', { taskId })
@@ -1061,18 +1157,39 @@ export function Workbench() {
       const draftUrl = String(result.postUrl || '')
       let opened = false
       try { await openPlatformTab(platform.id, draftUrl); opened = true } catch { /* draft remains saved and auditable */ }
-      setGuardedDraftNote(opened
+      setPackageNote(pkgId, opened
         ? `${platform.name}草稿已保存并已打开；请在平台页面检查后手动发布。`
         : `${platform.name}草稿已保存，但未能自动打开平台；可在任务中心打开草稿。`)
       await reloadServerTasks()
       if (!opened) setTab('tasks')
     } catch (e) {
-      if (taskId) await call(commands.fail, { taskId, error: errMessage(e) }).catch(() => {})
-      setGuardedDraftNote(errMessage(e))
+      const message = guardedDraftAbortRef.current.has(pkgId)
+        ? '已手动中止保存；已创建的平台任务已标记失败。若页面填写已开始，是否写入草稿以平台草稿箱为准。'
+        : errMessage(e)
+      if (taskId) await call(commands.fail, { taskId, error: message }).catch(() => {})
+      setPackageNote(pkgId, message.includes(platform.name) || message.includes('已手动中止') ? message : `【${platform.name}】${message}`)
       await reloadServerTasks()
     } finally {
-      setGuardedDraftBusy(false)
+      setGuardedDraftBusyIds((prev) => prev.filter((id) => id !== pkgId))
+      setGuardedDraftAbortedIds((prev) => prev.filter((id) => id !== pkgId))
+      guardedDraftAbortRef.current.delete(pkgId)
+      guardedDraftTaskRef.current.delete(pkgId)
+      guardedDraftAbortControllers.current.delete(pkgId)
     }
+  }
+
+  /** 中止进行中的草稿保存：标记中止、断开在途服务请求、把已创建的任务终止化。 */
+  async function abortGuardedDraft(pkgId: string) {
+    if (!packageBusy(pkgId) || packageAborted(pkgId)) return
+    guardedDraftAbortRef.current.add(pkgId)
+    setGuardedDraftAbortedIds((prev) => [...new Set([...prev, pkgId])])
+    guardedDraftAbortControllers.current.get(pkgId)?.abort()
+    const active = guardedDraftTaskRef.current.get(pkgId)
+    if (active) {
+      await call(active.fail, { taskId: active.taskId, error: '用户手动中止保存' }).catch(() => {})
+    }
+    setPackageNote(pkgId, '已请求中止本次保存。若页面填写已开始，是否写入草稿以平台草稿箱为准。')
+    await reloadServerTasks().catch(() => {})
   }
 
   async function confirmServerPublished(taskId: string) {
@@ -1162,6 +1279,17 @@ export function Workbench() {
 
   const preview = useMemo(() => detail ? buildPreview(detail) : null, [detail])
 
+  // 卡片就是受保护草稿的主入口：读取完文章包后立即执行既有安全检查和
+  // saveDraft 流程。详情区仍保留用于故障排查，正常操作不再要求滚动到底部。
+  useEffect(() => {
+    if (!quickDraftRequest || !detail || !preview || openCap?.kind !== 'guarded-draft') return
+    if (detail.packageId !== quickDraftRequest || packageBusy(detail.packageId)) return
+    setQuickDraftRequest('')
+    void saveGuardedDraft()
+    // saveGuardedDraft 读取的 detail/openCap/preview 已在本轮匹配完成。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickDraftRequest, detail, preview, openCap, guardedDraftBusyIds])
+
   return <main>
     <header>
       <div>
@@ -1175,11 +1303,12 @@ export function Workbench() {
         </p>
       </div>
       <nav>
-        <button className={tab === 'library' ? 'on' : ''} onClick={() => setTab('library')}>文章库</button>
+        <button className={tab === 'library' ? 'on' : ''} onClick={() => { setTab('library'); setDetail(null); setOpenCap(null) }}>未归档文章</button>
+        <button className={tab === 'archive' ? 'on' : ''} onClick={() => { setTab('archive'); setDetail(null); setOpenCap(null) }}>已归档文章</button>
         <button className={tab === 'config' ? 'on' : ''} onClick={() => setTab('config')}>配置</button>
         <button className={tab === 'platforms' ? 'on' : ''} onClick={() => { setTab('platforms'); loadCapabilities() }}>平台与账号</button>
         <button className={tab === 'safety' ? 'on' : ''} onClick={() => { setTab('safety'); loadCapabilities() }}>安全闸门</button>
-        <button className={tab === 'tasks' ? 'on' : ''} onClick={() => setTab('tasks')}>任务中心（{tasks.length + serverTasks.length}）</button>
+        <button className={tab === 'tasks' ? 'on' : ''} onClick={() => setTab('tasks')}>任务中心（{tasks.length + visibleServerTasks.length}）</button>
       </nav>
     </header>
 
@@ -1214,8 +1343,8 @@ export function Workbench() {
         <div className="wizard-step">
           <h3>1. 个人目录</h3>
           <div className="row"><label>未发布目录<input value={rootInputs.unpublished} onChange={(e) => setRootInputs({ ...rootInputs, unpublished: e.target.value })} placeholder="例如 C:\Users\你\Desktop\每日文章\未发布" /></label></div>
-          <div className="row"><label>已发布历史目录<input value={rootInputs.published} onChange={(e) => setRootInputs({ ...rootInputs, published: e.target.value })} placeholder="留空表示暂不扫描已发布目录" /></label></div>
-          <div className="row"><label>归档目标目录（仅预演，不移动文件）<input value={rootInputs.archive} onChange={(e) => setRootInputs({ ...rootInputs, archive: e.target.value })} placeholder="例如 C:\Users\你\Desktop\每日文章\已归档" /></label></div>
+          <div className="row"><label>已发布目录（历史资料，可留空）<input value={rootInputs.published} onChange={(e) => setRootInputs({ ...rootInputs, published: e.target.value })} placeholder="例如 C:\Users\你\Desktop\每日文章\已发布" /></label></div>
+          <div className="row"><label>已归档目录<input value={rootInputs.archive} onChange={(e) => setRootInputs({ ...rootInputs, archive: e.target.value })} placeholder="例如 C:\Users\你\Desktop\每日文章\已归档" /></label></div>
           <p className="hint">三个目录不能相同或互相嵌套；服务端会按真实路径复核 junction/符号链接边界。</p>
         </div>
         <div className="wizard-step">
@@ -1266,20 +1395,20 @@ export function Workbench() {
         </div>
         <div className="row">
           <button onClick={saveRoots}>保存配置</button>
-          <span className="hint">只登记配置用于扫描和预演；不创建、不改名、不移动文件夹，不读取或写入真实 Excel。</span>
+          <span className="hint">保存配置本身不会移动文件。文章卡片上的小圆圈经当次确认后只执行“未归档 → 已归档”移动，不读取或写入 Excel。</span>
         </div>
-        {roots.unpublished && <p className="hint">当前未发布目录：{roots.unpublished}{roots.published ? ` · 已发布目录：${roots.published}` : ''}{roots.archive ? ` · 归档目标：${roots.archive}` : ''}</p>}
+        {roots.unpublished && <p className="hint">当前未归档目录：{roots.unpublished}{roots.published ? ` · 已发布目录：${roots.published}` : ''}{roots.archive ? ` · 已归档目录：${roots.archive}` : ' · 已归档目录：尚未配置'}</p>}
         {excel.planPath && <p className="hint">当前登记表：{excel.planPath}{excel.sheetName ? ` · 工作表：${excel.sheetName}` : ''}（可做只读匹配预览，不写表）</p>}
       </section>}
 
-    {serviceState === 'ok' && tab === 'library' && <>
-      {roots.unpublished && <section className="card">
-        <h2>文章库</h2>
+    {serviceState === 'ok' && (tab === 'library' || tab === 'archive') && <>
+      {roots[activeLibraryRoot] && <section className="card">
+        <h2>{tab === 'library' ? '未归档文章' : '已归档文章'}</h2>
         <div className="row">
-          <button disabled={!!scanning} onClick={() => scan('unpublished')}>{scanning === 'unpublished' ? '扫描中…' : '扫描未发布'}</button>
-          {roots.published && <button disabled={!!scanning} onClick={() => scan('published')}>{scanning === 'published' ? '扫描中…' : '扫描已发布'}</button>}
-          <span className="hint">只读扫描：识别结果原样展示，不修改任何文件。能力标签：<em className="tag">只读</em> 仅查看不改写；<em className="tag">模拟</em> 不调用真实平台；<em className="tag">待适配</em> 未接入；<em className="tag">需要另行授权</em> 真实发布/投稿需授权。</span>
+          <button disabled={!!scanning} onClick={() => scan(activeLibraryRoot)}>{scanning === activeLibraryRoot ? '扫描中…' : (tab === 'library' ? '扫描未归档' : '扫描已归档')}</button>
+          <span className="hint">{tab === 'library' ? '扫描本身只读。卡片右上角小圆圈用于归档：确认后只移动这一篇，不写 Excel、不触发平台发布。' : '这里只扫描并查看已归档目录，不显示未归档文章，也不提供发布或再次归档操作。'}</span>
         </div>
+        {archiveNotice && <p className="archive-success">{archiveNotice}</p>}
         {Object.values(scans).some((items) => items.length) && <div className="library-tools">
           <label>
             <span>平台筛选</span>
@@ -1294,9 +1423,19 @@ export function Workbench() {
           </label>
           {(libraryPlatform !== 'all' || librarySearch) && <button type="button" className="secondary" onClick={() => { setLibraryPlatform('all'); setLibrarySearch('') }}>清除筛选</button>}
         </div>}
-        {(['unpublished', 'published'] as const).filter((r) => scans[r]?.length).map((root) => <div key={root} className="library-state">
-          <h3 className="state-title">{root === 'unpublished' ? '未发布' : '已发布（历史待核对）'}</h3>
-          {groupPackages(filterLibraryPackages(scans[root]!), platformCatalog).map((source) => <section className="source-group" key={source.key}>
+        {tab === 'library' && quickDraftPackageId && (() => {
+          const quickNote = guardedDraftNotes[quickDraftPackageId] || ''
+          const quickBusy = packageBusy(quickDraftPackageId)
+          const quickAborted = packageAborted(quickDraftPackageId)
+          return <div className={`quick-draft-status${quickNote && !quickNote.includes('已保存') ? ' error' : ''}`}>
+            <strong>{quickBusy ? (quickAborted ? '已请求中止，正在等待页面流程返回…' : '正在自动检查并保存草稿…') : (quickDraftRequest ? '正在自动检查并保存草稿…' : (quickNote.includes('已保存') ? '草稿已保存，平台页面已打开' : '本次操作需要处理'))}</strong>
+            {quickNote && <span>{quickNote}</span>}
+            {quickBusy && !quickAborted && <button type="button" className="secondary" onClick={() => abortGuardedDraft(quickDraftPackageId)}>中止保存</button>}
+          </div>
+        })()}
+        {([activeLibraryRoot] as const).filter((r) => scans[r]?.length).map((root) => <div key={root} className="library-state">
+          <h3 className="state-title">{root === 'unpublished' ? '未归档' : '已归档'}</h3>
+          {groupPackages(filterLibraryPackages(scans[root]!).filter((pkg) => !isRemovedPublishingPackage(pkg)), platformCatalog).map((source) => <section className="source-group" key={source.key}>
             <div className="source-head">
               <strong>{source.name}</strong>
               <span className="source-badge">{source.badge}</span>
@@ -1309,34 +1448,51 @@ export function Workbench() {
                 <small>{category.packages.length} 个发布包</small>
               </div>
               <div className="cards">{category.packages.map((pkg) => {
-                const cap = capabilityFor(pkg.segments, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES)
-                const disabled = cap.kind === 'not-ready'
-                return <button key={pkg.packageId} className="pkg" data-cap={cap.kind} disabled={disabled} title={disabled ? cap.explain : undefined} onClick={() => openPackage(pkg)}>
-                  <span className="pkg-caps">{pkg.segments[0] === '官网' && <i className="tag site-tag">{pkg.segments[1]}</i>}{cap.tags.map((tag) => <i key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</i>)}</span>
+                const archivedPackage = root !== 'unpublished'
+                const cap = archivedPackage ? null : capabilityFor(pkg.segments, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES)
+                const disabled = cap?.kind === 'not-ready'
+                const pkgNote = guardedDraftNotes[pkg.packageId || ''] || ''
+                const busyThis = packageBusy(pkg.packageId)
+                const isQuickDraft = quickDraftPackageId === pkg.packageId
+                const quickDraftFailed = Boolean(isQuickDraft && pkgNote && !pkgNote.includes('已保存'))
+                const actionLabel = archivedPackage ? '查看已归档详情' : (busyThis
+                  ? (packageAborted(pkg.packageId) ? '中止中…' : '中止保存')
+                  : (isQuickDraft
+                    ? (quickDraftRequest
+                      ? '正在检查并保存…'
+                      : (pkgNote.includes('已保存') ? '已保存并打开平台' : (quickDraftFailed ? '保存失败，点击重试' : cap!.label)))
+                    : cap!.label))
+                return <div key={pkg.packageId} className="pkg-wrap">
+                <button className="pkg" data-cap={archivedPackage ? 'archived' : cap!.kind} disabled={disabled || packageAborted(pkg.packageId)} title={disabled ? cap!.explain : (busyThis && !packageAborted(pkg.packageId) ? '点击中止本次保存' : undefined)} onClick={() => busyThis ? abortGuardedDraft(pkg.packageId!) : (cap?.kind === 'guarded-draft' ? startQuickGuardedDraft(pkg) : openPackage(pkg))}>
+                  <span className="pkg-caps">{archivedPackage && <i className="tag">已归档</i>}{pkg.segments[0] === '官网' && <i className="tag site-tag">{pkg.segments[1]}</i>}{(cap?.tags || []).map((tag) => <i key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</i>)}</span>
                   <strong>{pkg.title}</strong>
                   <small>{packageDate(pkg)}</small>
                   <span className="pkg-health">{pkg.issueCount ? `⚠ ${pkg.issueCount} 项问题` : '✓ 完整'} <small>图片 {pkg.imageCount} · ALT {pkg.altCount}</small></span>
-                  <span className={`pkg-action${cap.kind === 'not-ready' ? ' off' : ''}`}>{cap.label}</span>
+                  <span className={`pkg-action${cap?.kind === 'not-ready' ? ' off' : ''}${quickDraftFailed ? ' failed' : ''}${busyThis ? ' failed' : ''}`}>{actionLabel}</span>
                 </button>
+                {!archivedPackage && roots.archive && <button type="button" className="pkg-archive" aria-label={`将《${pkg.title}》移动到已归档`} title="移动到已归档（不写 Excel）" onClick={() => archivePackage(pkg)} disabled={Boolean(archivingPackageId === pkg.packageId || busyThis)}>{archivingPackageId === pkg.packageId ? '…' : '○'}</button>}
+                {cap?.kind === 'guarded-draft' && <button type="button" className="pkg-details" onClick={() => openPackage(pkg)} disabled={busyThis}>查看详情</button>}
+                </div>
               })}</div>
             </div>)}
           </section>)}
           {!filterLibraryPackages(scans[root]!).length && <div className="library-empty-filter">没有找到符合条件的文章。<button type="button" className="secondary" onClick={() => { setLibraryPlatform('all'); setLibrarySearch('') }}>查看全部</button></div>}
           {scans[root]!.filter((p) => !p.packageId).map((notice, index) => <p className="hint" key={`${notice.relativePath}/${index}`}>⚠ {notice.title}</p>)}
         </div>)}
-        {scans.unpublished && !scans.unpublished.length && <p className="hint">未发布目录中没有识别到发布包（需要 01-SEO元数据.json / 01-SEO信息.txt / 02-后台一键复制正文.html 或 .docx 标记）。</p>}
+        {tab === 'library' && scans.unpublished && !scans.unpublished.length && <p className="hint">未归档目录中没有识别到发布包（需要 01-SEO元数据.json / 01-SEO信息.txt / 02-后台一键复制正文.html 或 .docx 标记）。</p>}
+        {tab === 'archive' && scans.archive && !scans.archive.length && <p className="hint">已归档目录中没有识别到发布包。</p>}
       </section>}
 
-      {!roots.unpublished && <section className="card empty-state">
-        <h2>尚未配置文章目录</h2>
-        <p className="hint">请先在独立配置页填写未发布目录，保存后会自动返回文章库。</p>
+      {!roots[activeLibraryRoot] && <section className="card empty-state">
+        <h2>{tab === 'library' ? '尚未配置未归档目录' : '尚未配置已归档目录'}</h2>
+        <p className="hint">请先在独立配置页填写{tab === 'library' ? '未发布目录' : '已归档目录'}。系统不会自动创建或移动目录。</p>
         <button onClick={() => setTab('config')}>前往配置</button>
       </section>}
 
       {detail && <section className="card detail">
         <h2>发布包详情（只读）</h2>
         {openCap && <div className="caps-row">{openCap.tags.map((tag) => <span key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</span>)}</div>}
-        <p className="hint">{detail.root === 'unpublished' ? '未发布' : '已发布'} · {detail.relativePath} · {detail.images.length} 张图片 · ALT 来源：{detail.altSource || '无'}{openCap ? ` · 能力：${openCap.label}` : ''}</p>
+        <p className="hint">{detail.root === 'unpublished' ? '未归档' : '已归档'} · {detail.relativePath} · {detail.images.length} 张图片 · ALT 来源：{detail.altSource || '无'}{openCap ? ` · 能力：${openCap.label}` : ' · 只读查看'}</p>
         {openCap && <p className="hint">{openCap.explain}</p>}
         {!!detail.issues.length && <div className="warn"><strong>校验问题（{detail.issues.length}）：</strong><ul>{detail.issues.map((i, n) => <li key={n}>{i}</li>)}</ul></div>}
         {!!detail.notes.length && <p className="hint">{detail.notes.join('；')}</p>}
@@ -1382,7 +1538,8 @@ export function Workbench() {
         </details>
 
         {/* 能力入口：发布流程预览（官网/百家号，服务端）| 草稿流程预览（知乎/搜狐/网易，扩展本地）| 待适配（禁用） */}
-        <div className="flow-card">
+        {detail.root !== 'unpublished' && <div className="flow-card"><h3>已归档文章（只读）</h3><p className="hint">这里只查看已归档目录中的现有文章包，不提供保存草稿、公开发布、Excel 写入、移动或删除操作。</p></div>}
+        {detail.root === 'unpublished' && <div className="flow-card">
           {openCap?.kind === 'publish-preview' && <>
             <h3>发布流程预览（{openCap.siteName} · 阶段2J 仅模拟）</h3>
             <p className="hint">目标站点：{openCap.siteName}（{openCap.siteKey}）· 站点锁键：{openCap.siteKey} · 账号占位：{openCap.siteKey}-占位账号（不真实登录）。先「生成执行预览与发送快照」，确认无误后再运行模拟发布流程。</p>
@@ -1479,12 +1636,15 @@ export function Workbench() {
             </div>
           </>}
 
-          {openCap?.kind === 'guarded-draft' && <>
+          {openCap?.kind === 'guarded-draft' && (() => {
+            const detailBusy = packageBusy(detail?.packageId)
+            const detailNote = (detail?.packageId && guardedDraftNotes[detail.packageId]) || ''
+            return <>
             <h3>一键保存并打开{openCap.platform?.name}</h3>
-            <p className="hint">点击一次即可自动检查、保存草稿并打开对应平台页面，你检查后直接继续发布。按钮点击即为本次草稿授权；不会自动点击平台的最终发布，也不会写 Excel 或移动文件。</p>
+            <p className="hint">点击一次即可自动检查、保存草稿并打开对应平台页面，你检查后直接继续发布。按钮点击即为本次草稿授权；不会自动点击平台的最终发布，也不会写 Excel 或移动文件。不同平台/文章可同时进行保存；保存中可随时中止。</p>
             <div className="acceptance-checks">
               <div className="row">
-                <button className="secondary" disabled={acceptanceBusy || guardedDraftBusy} onClick={async () => {
+                <button className="secondary" disabled={acceptanceBusy || detailBusy} onClick={async () => {
                   if (!showAcceptanceDetails && !acceptanceChecks.length) await runAcceptanceCheck()
                   setShowAcceptanceDetails((value) => !value)
                 }}>{showAcceptanceDetails ? '收起检查详情' : (acceptanceBusy ? '正在检查…' : '查看检查详情')}</button>
@@ -1495,13 +1655,16 @@ export function Workbench() {
               </li>)}</ul>}
             </div>
             <div className="row">
-              <button onClick={saveGuardedDraft} disabled={!compatibility.ok || guardedDraftBusy || acceptanceBusy}>{guardedDraftBusy ? '正在检查并保存…' : `保存草稿并打开${openCap.platform?.name}`}</button>
-              {showAcceptanceDetails && <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || guardedDraftBusy}>{acceptanceBusy ? '正在重新检查…' : '重新检查'}</button>}
+              {detailBusy
+                ? <button className="secondary" disabled={packageAborted(detail?.packageId)} onClick={() => detail?.packageId && abortGuardedDraft(detail.packageId)}>{packageAborted(detail?.packageId) ? '已中止，等待页面流程返回…' : '中止保存'}</button>
+                : <button onClick={saveGuardedDraft} disabled={!compatibility.ok || acceptanceBusy}>{`保存草稿并打开${openCap.platform?.name}`}</button>}
+              {showAcceptanceDetails && <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || detailBusy}>{acceptanceBusy ? '正在重新检查…' : '重新检查'}</button>}
               {showAcceptanceDetails && <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>}
               {showAcceptanceDetails && <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成验收材料（只读）'}</button>}
             </div>
-            {guardedDraftNote && <p className={guardedDraftNote.includes('已保存') ? 'ok' : 'warn'}>{guardedDraftNote}</p>}
-          </>}
+            {detailNote && <p className={detailNote.includes('已保存') ? 'ok' : 'warn'}>{detailNote}</p>}
+          </>
+          })()}
 
           {openCap?.kind === 'not-ready' && <>
             <h3>待适配</h3>
@@ -1528,7 +1691,7 @@ export function Workbench() {
             </label>
             <p className="hint">这些只是可复制、可下载的只读验收文本，不是执行授权；不能据此自动上传、写表或归档。</p>
           </div>}
-        </div>
+        </div>}
       </section>}
       {detailError && <div role="alert" className="error">{detailError}</div>}
     </>}
@@ -1600,7 +1763,7 @@ export function Workbench() {
 
     {tab === 'tasks' && <section className="card">
       <h2>任务中心 · 模拟与受保护草稿</h2>
-      <p className="hint">官网/百家号仍为模拟；知乎、搜狐号、头条号可出现受保护的真实草稿任务。草稿保存成功不等于公开发布，后续发布、Excel 登记和归档不会自动触发。</p>
+      <p className="hint">官网和百家号发布入口已移除；这里只显示其他平台的模拟或受保护草稿任务。草稿保存成功不等于公开发布，后续发布、Excel 登记和归档不会自动触发。</p>
 
       {acceptanceEvidence && <div className="acceptance-evidence">
         <strong>非敏感验收证据已就绪</strong>
@@ -1627,9 +1790,9 @@ export function Workbench() {
         <p className="hint">只读门槛：不会移动源文件。草稿、模拟完成、等待用户最终提交都不算正式发布；一个包供多个平台使用时，必须全部人工确认发布且登记后，才允许进入归档确认。</p>
       </article>)}</div>}
 
-      {serviceState === 'ok' && serverTasks.length > 0 && <>
+      {serviceState === 'ok' && visibleServerTasks.length > 0 && <>
         <h3 className="state-title">服务端持久任务</h3>
-        <ul className="tasks">{serverTasks.map((t) => <li key={t.taskId}>
+        <ul className="tasks">{visibleServerTasks.map((t) => <li key={t.taskId}>
           <div className="task-head">
             <strong>{t.title}</strong>
             <span className={`badge${t.mode === 'simulate' ? ' sim' : ''}`}>{['zhihu-draft', 'sohu-draft', 'toutiao-draft', 'netease-draft', 'xiaohongshu-draft'].includes(t.mode) ? '受保护草稿' : '模拟'}</span>
@@ -1673,7 +1836,7 @@ export function Workbench() {
           </div>
         </li>)}</ul>
       </>}
-      {serviceState === 'ok' && serverTasks.length === 0 && <p className="hint">暂无服务端持久任务。</p>}
+      {serviceState === 'ok' && visibleServerTasks.length === 0 && <p className="hint">暂无服务端持久任务。</p>}
 
       <h3 className="state-title">扩展本地草稿模拟</h3>
       {!tasks.length && <p className="hint">暂无草稿模拟任务。请在文章库打开发布包后创建。</p>}

@@ -166,6 +166,21 @@ async function runGuardedDraft(
   platform: keyof typeof GUARDED_DRAFT_RUNTIME,
   payload: { article: any; snapshotId: string; taskId: string },
 ) {
+  // 草稿填写在小红书等页面里一次 executeScript 内完成，可能持续数分钟；
+  // 期间后台若被 MV3 空闲策略回收，工作台挂起的 sendMessage 通道会随之中断。
+  // 定期完成一次扩展 API 调用即可重置 30 秒空闲计时，保持后台存活。
+  const keepAlive = setInterval(() => { chrome.runtime.getPlatformInfo().catch(() => {}) }, 20000)
+  try {
+    return await runGuardedDraftInner(platform, payload)
+  } finally {
+    clearInterval(keepAlive)
+  }
+}
+
+async function runGuardedDraftInner(
+  platform: keyof typeof GUARDED_DRAFT_RUNTIME,
+  payload: { article: any; snapshotId: string; taskId: string },
+) {
   const config = GUARDED_DRAFT_RUNTIME[platform]
   const { article, snapshotId, taskId } = payload
   if (!/^snap-[0-9a-f]{24}$/.test(snapshotId || '')) return { error: `无效的${config.name}草稿快照授权` }

@@ -100,7 +100,8 @@ pending → validating → ready → running
 - 独立的真实上传命令仍禁止；仅知乎、搜狐号、头条号、网易号或小红书 `saveDraft` 内部所需图片上传随各自当次授权执行。
 - 当前仍然禁止最终公开发布。
 - 当前仍然禁止 Excel 写入。
-- 当前仍然禁止文件移动、删除和真实归档。
+- 文件删除和批量归档仍然禁止；仅允许用户当次确认后，把服务端复核的单个文章包从未归档根目录原子移动到独立归档根目录。
+- 未归档与已归档使用独立工作台页面；归档目录允许复用受控扫描与包详情接口做只读浏览，归档来源的文章包不提供平台动作入口。
 - `checkRealActionGate` 默认拒绝；只在 `zhihu/sohu/toutiao/netease/xiaohongshu + saveDraft + 对应独立阶段 + 当次确认 + 快照复核` 同时成立时允许。
 - 知乎、搜狐号、头条号、网易号、小红书 Platform Adapter 的 `publish()` 拒绝；其他平台的 `saveDraft()`、`publish()` 继续拒绝。
 - 不能绕过 Host、Origin、Token、扩展 ID 绑定、packageId、realpath、站点绑定、请求大小和命令白名单验证。

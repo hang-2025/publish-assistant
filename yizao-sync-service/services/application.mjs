@@ -12,6 +12,7 @@ import { classifyTaskId, previewRegistration } from '../lib/excel-mapping.mjs';
 import { checkRealActionGate, getCapabilities, PLATFORM_CAPABILITIES } from '../lib/capabilities.mjs';
 import { ACCEPTANCE_BUILD, LOCAL_PROTOCOL, SERVICE_VERSION } from '../lib/build-info.mjs';
 import { archiveGateForSharedPackage } from '../lib/archive-sim.mjs';
+import { movePackageToArchive } from '../lib/archive-real.mjs';
 import {
   SITE_KEYS, validSiteKey, buildPublishPreview, startSimulatedPublish,
   assertPackageSiteBinding, allowedSiteKeysForSegments,
@@ -66,7 +67,7 @@ import { platformRegistry } from '../platforms/registry.mjs';
  * - simulateOfficialTask 走模拟状态机，推进到「等待用户最终提交（模拟）」，绝不自动发布；
  * - Excel 只读映射原型可通过已配置的登记表路径做匹配预览，但不写入任何单元格；
  * - checkRealActionGate 默认返回 allowed=false；仅内部经过当次确认及快照复核的知乎、搜狐号、头条号、网易号、小红书单篇 saveDraft 可放行；
- * - 公开发布、Excel 写入、文章归档等命令一概不提供。
+ * - 公开发布、Excel 写入、删除与批量归档命令一概不提供；手动归档只允许当次确认的单包移动。
  *
  * 审查返工（2026-09-04）新增的两条硬约束：
  * - 【P0-1】发布包与目标平台必须服务端绑定：prepareOfficialTask / simulateOfficialTask
@@ -341,7 +342,7 @@ async function cmdSetConfig(payload) {
 async function cmdScan(payload) {
   const config = await loadConfig();
   const rootName = payload?.root;
-  if (!['unpublished', 'published'].includes(rootName)) throw new Error('root 必须是 unpublished 或 published');
+  if (!['unpublished', 'published', 'archive'].includes(rootName)) throw new Error('root 必须是 unpublished、published 或 archive');
   const rootDir = config.roots?.[rootName];
   if (!rootDir) throw new Error('尚未配置该目录，请先在设置中配置');
   const packages = await scanRoot(rootDir, rootName, makePackageId);
@@ -410,6 +411,52 @@ async function cmdGetPackage(payload) {
   };
   await articleService.enrichPackage(response);
   return response;
+}
+
+async function cmdArchivePackage(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const packageId = String(payload?.packageId || '');
+  if (!PKG_ID_RE.test(packageId)) throw new Error('packageId 必须是扫描签发的包 ID');
+  if (payload?.userConfirmed !== true) throw new Error('本次归档需要用户明确确认');
+  if (!packageIndex.has(packageId)) throw new Error('未知或已过期的包 ID（服务重启后请重新扫描）');
+  const indexed = packageIndex.get(packageId);
+  if (indexed.rootName !== 'unpublished') throw new Error('只能归档未归档目录中的文章包');
+
+  const config = await loadConfig();
+  const sourceRoot = config.roots?.unpublished;
+  const targetRoot = config.roots?.archive;
+  if (!sourceRoot || !targetRoot) throw new Error('请先同时配置未归档目录和已归档目录');
+  const segments = String(indexed.relativePath || '').split('/').filter(Boolean);
+  const platform = platformRegistry.get(segments[1]);
+  if (!platform) throw new Error('无法从文章包目录识别平台，已拒绝归档');
+  const activeTask = (await store.listTasks()).find((task) => task.packageId === packageId && task.runState === 'active');
+  if (activeTask) throw new Error('该文章当前仍有进行中的任务，请等待任务结束后再归档');
+
+  const { absolutePath } = await resolveInside(sourceRoot, indexed.relativePath);
+  await inspectPackage(absolutePath);
+  const gate = checkRealActionGate({
+    action: 'archiveMove',
+    platform: platform.id,
+    authorization: {
+      stage: '8-manual-archive',
+      userConfirmed: true,
+      packageVerified: true,
+      sourceRoot: 'unpublished',
+      targetRoot: 'archive',
+    },
+  });
+  if (!gate.allowed) throw new Error(gate.reason || '归档安全闸门未通过');
+
+  const result = await movePackageToArchive({ sourceRoot, archiveRoot: targetRoot, relativePath: indexed.relativePath });
+  packageIndex.delete(packageId);
+  await articleRepository.clear();
+  return {
+    ...result,
+    packageId,
+    root: 'archive',
+    excelWritten: false,
+    notice: '已移动到已归档目录；未写 Excel，未触发平台发布。',
+  };
 }
 
 // ---------- 阶段1B~1D：发送快照 / 官网百家号骨架 / 任务状态 / 只读预览 / 安全闸门 ----------
@@ -1113,7 +1160,7 @@ function buildSmallSampleAcceptanceTemplate(preflight) {
     `- [x] 当前构建不提供真实上传或保存草稿命令。`,
     `- [x] 当前构建不提供自动最终提交命令。`,
     `- [x] 当前构建不提供真实 Excel 写入命令。`,
-    `- [x] 当前构建不提供真实移动、删除或归档命令。`,
+    `- [x] 当前构建不提供任意移动、删除或批量归档命令；单包手动归档仍须当次确认。`,
   ].join('\n');
 }
 
@@ -1321,6 +1368,7 @@ async function cmdPreviewArchiveGate(payload) {
 
 const COMMANDS = {
   getConfig: cmdGetConfig, setConfig: cmdSetConfig, scan: cmdScan, getPackage: cmdGetPackage,
+  archivePackage: cmdArchivePackage,
   prepareOfficialTask: cmdPrepareOfficialTask, simulateOfficialTask: cmdSimulateOfficialTask,
   getTasks: cmdGetTasks, getTask: cmdGetTask, removeTask: cmdRemoveTask,
   confirmPublishedSimulated: cmdConfirmPublishedSimulated,
@@ -1420,7 +1468,7 @@ export async function startApplication() {
     console.log('白名单命令（35 条）：原有 20 条只读/模拟命令；知乎、搜狐号与头条号各新增 5 条受保护草稿握手命令。');
     console.log('包↔平台绑定：prepare/simulate 只允许把包发往其受控目录推导出的站点，不匹配直接拒绝。');
     console.log('受保护草稿：仅知乎、搜狐号、头条号或网易号单篇 saveDraft 可在用户当次确认、快照复核与登录检查后执行；公开 publish 始终拒绝。');
-    console.log('不提供公开发布/Excel 写入登记/真实归档命令，不启动旧执行器，不修改文章与 Excel。');
+    console.log('不提供公开发布/Excel 写入登记/删除或批量归档命令；单包归档仅在当次确认后移动到独立归档目录。');
     console.log('站点锁作用域：仅在新服务遵循同一文件锁协议的进程之间互斥，不覆盖未接入本协议的旧执行器。');
   });
 }

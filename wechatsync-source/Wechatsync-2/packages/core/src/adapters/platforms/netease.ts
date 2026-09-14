@@ -9,6 +9,7 @@ import type { Article, AuthResult, PlatformMeta, SyncResult } from '../../types'
 import type { PublishOptions } from '../types'
 import { createLogger } from '../../lib/logger'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity } from '../../article/canonical'
+import type { CanonicalArticle, FidelityReport } from '../../article/canonical'
 
 const logger = createLogger('Netease')
 const EDITOR_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish'
@@ -60,7 +61,9 @@ function draftRecord(envelope: any): { id: string; title: string; content: strin
   for (const item of candidates) {
     if (!item || typeof item !== 'object') continue
     const id = String(item.docid ?? item.docId ?? item.postId ?? item.id ?? '')
-    const content = String(item.content ?? '')
+    // 网易官方编辑器把回读正文写在 data.post.body；content 是部分旧响应
+    // 使用过的字段。两者都只作为回读校验输入，不改变保存时提交的正文。
+    const content = String(item.body ?? item.content ?? '')
     if (/^[A-Za-z0-9_-]+$/.test(id) && content.trim()) return { id, title: String(item.title ?? ''), content }
   }
   return null
@@ -81,8 +84,59 @@ function trustedImageUrl(value: string): string {
   try {
     const url = new URL(normalized)
     const trusted = ['163.com', '126.net', '127.net'].some((suffix) => url.hostname === suffix || url.hostname.endsWith(`.${suffix}`))
-    return url.protocol === 'https:' && trusted ? url.toString() : ''
+    if (!trusted || !['http:', 'https:'].includes(url.protocol)) return ''
+    // 网易上传接口仍可能返回旗下 CDN 的 http 地址。只对已通过域名
+    // 白名单的网易地址升级协议，最终正文中仍只允许 HTTPS。
+    url.protocol = 'https:'
+    return url.toString()
   } catch { return '' }
+}
+
+function uploadedImageCandidates(envelope: any): string[] {
+  const candidates: unknown[] = [
+    envelope?.url, envelope?.picUrl, envelope?.imageUrl, envelope?.src,
+    envelope?.data,
+    envelope?.data?.url, envelope?.data?.picUrl, envelope?.data?.imageUrl, envelope?.data?.src,
+    envelope?.data?.result?.url, envelope?.data?.result?.picUrl, envelope?.data?.result?.src,
+    envelope?.result?.url, envelope?.result?.picUrl, envelope?.result?.src,
+  ]
+  return candidates.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+}
+
+const compactNeteaseText = (value: string) => String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
+
+/**
+ * 网易会把相邻标题/段落拆分或合并，HTML 块数并不稳定。正文字符顺序和
+ * 每张图片前的累计正文字符位置才是稳定语义；图片数、顺序和图注仍沿用
+ * canonical 的严格校验，不能因平台重排标签而放宽。
+ */
+export function validateNeteaseFidelity(source: CanonicalArticle, readBackHtml: string, readBackTitle: string): FidelityReport {
+  const report = validateCanonicalFidelity(source, readBackHtml, readBackTitle)
+  const actual = parseCanonicalArticle(readBackHtml, readBackTitle)
+  const text = (article: CanonicalArticle) => compactNeteaseText(article.blocks
+    .filter((block) => block.kind !== 'image' && block.kind !== 'divider')
+    .map((block) => 'text' in block ? block.text : '')
+    .join(''))
+  const imageOffsets = (article: CanonicalArticle) => {
+    let offset = 0
+    const result: number[] = []
+    for (const block of article.blocks) {
+      if (block.kind === 'image') result.push(offset)
+      else if (block.kind !== 'divider' && 'text' in block) offset += compactNeteaseText(block.text).length
+    }
+    return result
+  }
+  const replace = (key: string, ok: boolean, detail: string) => {
+    const check = report.checks.find((item) => item.key === key)
+    if (check) { check.status = ok ? 'PASS' : 'FAIL'; check.detail = detail }
+  }
+  replace('main-block-order', text(source) === text(actual), '正文文字与顺序一致；允许网易合并或拆分 HTML 段落')
+  replace('image-anchor', JSON.stringify(imageOffsets(source)) === JSON.stringify(imageOffsets(actual)), '按每张图片前累计正文字符位置核对；不依赖网易重排后的段落数量')
+  report.summary = { pass: 0, degraded: 0, unsupported: 0, fail: 0 }
+  for (const check of report.checks) report.summary[check.status.toLowerCase() as keyof typeof report.summary]++
+  report.fidelityVerified = report.checks.every((check) => !check.required || check.status === 'PASS')
+  report.overall = report.fidelityVerified ? (report.summary.degraded ? 'DEGRADED' : 'PASS') : 'FAIL'
+  return report
 }
 
 export class NeteaseAdapter extends CodeAdapter {
@@ -161,16 +215,40 @@ export class NeteaseAdapter extends CodeAdapter {
       const postId = savedDocId(envelope)
       if (!postId) throw new Error(String(envelope?.message || envelope?.msg || '网易号保存草稿响应缺少有效草稿 ID'))
 
-      const readResponse = await this.pageRequest({
-        url: `${API_PREFIX}/article/editpage.do?postId=${encodeURIComponent(postId)}&wemediaId=${encodeURIComponent(this.accountId)}&mediaId=${encodeURIComponent(this.accountId)}`,
-        method: 'GET',
-      })
-      if (!readResponse.ok) throw new Error(`网易号草稿回读失败: HTTP ${readResponse.status}`)
-      const readBack = draftRecord(parseJson(readResponse.text))
-      if (!readBack || readBack.id !== postId) throw new Error('网易号草稿回读内容与本次保存不一致')
+      let readBack: ReturnType<typeof draftRecord> = null
+      let readBackDetail = '内容尚未就绪'
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        // 网易官方编辑器只传 postId。保存后的数据可能短暂尚未同步，因此这里只
+        // 重试幂等 GET 回读，绝不重放上面的 publishV2 保存请求。
+        const readResponse = await this.pageRequest({
+          url: `${API_PREFIX}/article/editpage.do?postId=${encodeURIComponent(postId)}`,
+          method: 'GET',
+        })
+        if (readResponse.ok) {
+          try {
+            const readEnvelope = parseJson(readResponse.text)
+            const candidate = draftRecord(readEnvelope)
+            if (candidate?.id === postId) {
+              readBack = candidate
+              break
+            }
+            readBackDetail = candidate
+              ? `返回的草稿 ID 为 ${candidate.id}`
+              : `正文尚未返回（响应码 ${String(readEnvelope?.code ?? '未知')}）`
+          } catch {
+            readBackDetail = '平台返回了无法识别的数据'
+          }
+        } else {
+          readBackDetail = `HTTP ${readResponse.status}`
+        }
+        if (attempt < 5) await this.delay(attempt * 500)
+      }
+      if (!readBack) {
+        throw new Error(`网易号草稿已保存，但回读确认未完成（已自动重试 5 次：${readBackDetail}）`)
+      }
 
       const draftUrl = `${EDITOR_URL}/${encodeURIComponent(postId)}`
-      const fidelityReport = validateCanonicalFidelity(canonical, readBack.content, readBack.title)
+      const fidelityReport = validateNeteaseFidelity(canonical, readBack.content, readBack.title)
       fidelityReport.checks.push(
         { key: 'trusted-draft-url', status: 'PASS', required: true, detail: '网易号 HTTPS 编辑草稿 URL' },
         { key: 'draft-only', status: 'PASS', required: true, detail: '官方操作参数固定 operation=saveDraft；未执行 operation=publish' },
@@ -189,17 +267,40 @@ export class NeteaseAdapter extends CodeAdapter {
   }
 
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
-    const response = await this.pageRequest({ url: `${API_PREFIX}/api/v3/upload/picupload`, method: 'POST', imageSource: src })
+    let response: PageResponse = { ok: false, status: 0, text: '' }
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      // 图片上传接口挂在前端站点根路径：编辑器自己的上传器请求
+      // //mp.163.com/api/v3/upload/picupload（DOMAIN=window.location.host），
+      // 不带 /wemedia 前缀。带前缀的旧路径已被网易 302 到跨域 404 页，
+      // XHR 跟随跨域重定向会直接报 HTTP 0。
+      response = await this.pageRequest({ url: '/api/v3/upload/picupload', method: 'POST', imageSource: src })
+      if (response.ok || response.status !== 0 || attempt === 3) break
+      // 网易创作页偶尔会在编辑器初始化/路由切换时中断 XHR，并返回 HTTP 0。
+      // 只对这种“尚未收到服务器响应”的网络中断做有限重试；明确的 HTTP
+      // 错误绝不重放，避免造成不可控的重复请求。
+      if (this.editorTabId !== null) {
+        await Promise.resolve(this.runtime.tabs?.waitForLoad(this.editorTabId, 15_000)).catch(() => {})
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 400))
+    }
     if (!response.ok) {
       let detail = ''
       try { detail = String(parseJson(response.text)?.error || '') } catch { /* keep status-only error */ }
+      if (response.status === 0) {
+        throw new Error(`网易号图片上传网络中断（已自动重试 3 次）${detail ? `：${detail}` : '；请刷新网易号创作页，确认页面可正常使用后再点击重试'}`)
+      }
       throw new Error(`网易号图片上传失败: HTTP ${response.status}${detail ? `（${detail}）` : ''}`)
     }
     const envelope = parseJson(response.text)
-    if (![1, 200].includes(Number(envelope?.code))) throw new Error(String(envelope?.message || envelope?.msg || '网易号图片上传失败'))
-    const candidates = [envelope?.data?.url, envelope?.data?.picUrl, envelope?.url]
-    const url = candidates.map((item) => trustedImageUrl(String(item || ''))).find(Boolean) || ''
-    if (!url) throw new Error('网易号图片上传响应缺少受信任的 HTTPS 图片 URL')
+    const responseCode = envelope?.code
+    if (responseCode !== undefined && responseCode !== null && ![1, 200].includes(Number(responseCode))) {
+      throw new Error(String(envelope?.message || envelope?.msg || '网易号图片上传失败'))
+    }
+    const url = uploadedImageCandidates(envelope).map(trustedImageUrl).find(Boolean) || ''
+    if (!url) {
+      const fields = envelope && typeof envelope === 'object' ? Object.keys(envelope).slice(0, 12).join(', ') : typeof envelope
+      throw new Error(`网易号图片上传响应缺少受信任的 HTTPS 图片 URL（响应字段：${fields || '空'}）`)
+    }
     return { url }
   }
 

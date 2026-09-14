@@ -18,7 +18,7 @@ const MAX_TITLE_LENGTH = 64
 const MAX_BODY_LENGTH = 10000
 const MAX_IMAGES = 20
 
-type PageArticle = { title: string; body: string; html: string; images: Array<{ source: string; name: string; marker: string }> }
+type PageArticle = { title: string; body: string; html: string; images: Array<{ source: string; name: string; marker: string; alt: string; anchor: number }> }
 type PageResult = {
   ok: boolean
   authenticated?: boolean
@@ -30,10 +30,16 @@ type PageResult = {
   imageCount?: number
   imageCaptions?: string[]
   imageAnchors?: number[]
+  matchedExisting?: boolean
   error?: string
 }
 
 function normalize(value: string): string { return value.replace(/\s+/g, ' ').trim() }
+export function normalizeXiaohongshuBodyForComparison(value: string): string {
+  // Tiptap 会按节点类型给表格、列表和段落插入不同的换行/空格，且新版
+  // 页面偶尔加入零宽字符。这些属于排版边界，不是正文内容变化。
+  return String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
+}
 
 function plainBody(article: ReturnType<typeof parseCanonicalArticle>): string {
   return article.blocks.map((block) => {
@@ -141,7 +147,10 @@ export class XiaohongshuAdapter extends CodeAdapter {
         title: article.title,
         body,
         html: longArticleHtml(canonical),
-        images: canonical.images.map((image) => ({ source: image.source, name: `image-${image.order}.jpg`, marker: `__YIZAO_IMAGE_${image.order}__` })),
+        images: canonical.images.map((image) => ({
+          source: image.source, name: `image-${image.order}.jpg`, marker: `__YIZAO_IMAGE_${image.order}__`,
+          alt: image.alt, anchor: image.anchor,
+        })),
       }
       await options?.onDraftStage?.('uploading')
       const tabId = await this.ensureEditorTab()
@@ -152,13 +161,24 @@ export class XiaohongshuAdapter extends CodeAdapter {
       await options?.onDraftStage?.('saving_draft')
       const pageResult = await this.runtime.tabs!.executeScript<PageResult, [PageArticle]>(tabId, async (input) => {
         const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+        // 整个页面步骤的硬截止。IndexedDB 的 open/transaction 回调一旦丢失
+        // （连接被阻塞或事务悬挂）会永远不返回，必须有时限兜底。
+        const deadline = Date.now() + 480_000
+        const timedOut = () => Date.now() > deadline
         const visible = (element: Element | null): element is HTMLElement => {
           if (!(element instanceof HTMLElement) || element.offsetParent === null) return false
           const rect = element.getBoundingClientRect()
           return rect.width > 0 && rect.height > 0
         }
         const normalizeText = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim()
+        const comparableText = (value: unknown) => String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
         const titleSelectors = ['textarea[placeholder="输入标题"]', 'textarea[placeholder*="标题"]', 'input[placeholder*="标题"]']
+        const editorSelectors = [
+          '.rich-editor-container [contenteditable="true"]',
+          '[contenteditable="true"].ProseMirror',
+          '.tiptap.ProseMirror',
+          '[data-placeholder*="输入文字"][contenteditable="true"]',
+        ]
         const findVisible = (selectors: string[]) => {
           for (const selector of selectors) {
             const element = Array.from(document.querySelectorAll(selector)).find(visible)
@@ -166,8 +186,51 @@ export class XiaohongshuAdapter extends CodeAdapter {
           }
           return null
         }
+        const isTiptapEditor = (candidate: any) => Boolean(candidate?.commands?.setContent
+          && candidate?.state?.doc && candidate?.chain && candidate?.getJSON)
+        const resolveEditor = (element: HTMLElement | null) => {
+          const direct = [
+            (window as any)._tiptap_editor,
+            (element as any)?.editor,
+            (element as any)?.__editor,
+            (element as any)?._editor,
+            (element as any)?.__vueParentComponent?.ctx?.editor?.value,
+            (element as any)?.__vueParentComponent?.ctx?.editor,
+          ]
+          for (const candidate of direct) if (isTiptapEditor(candidate)) return candidate
+
+          // 当前小红书长文页使用 React/Tiptap，但新版不再把 editor 挂到
+          // window._tiptap_editor。EditorContent 的 React fiber props 仍持有
+          // 官方 Editor 实例；只读取该实例并调用 Tiptap 公共命令。
+          for (let node: HTMLElement | null = element; node; node = node.parentElement) {
+            const fiberKey = Object.keys(node).find((key) => key.startsWith('__reactFiber$'))
+            let fiber = fiberKey ? (node as any)[fiberKey] : null
+            for (let depth = 0; fiber && depth < 20; depth++, fiber = fiber.return) {
+              const candidates = [fiber.memoizedProps?.editor, fiber.pendingProps?.editor, fiber.stateNode?.editor]
+              for (const candidate of candidates) if (isTiptapEditor(candidate)) return candidate
+            }
+          }
+          return null
+        }
+        const actionByExactText = (label: string) => {
+          // “新的创作”在不同版本页面中可能是 button，也可能只是绑定了
+          // React 点击事件的 div/span。取精确文案的最内层可见节点并点击，
+          // 事件会冒泡到实际处理器；不再依赖某一种标签结构。
+          const matches = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], a, div, span'))
+            .filter((element) => visible(element) && normalizeText(element.innerText || element.textContent) === label)
+            .sort((left, right) => left.childElementCount - right.childElementCount)
+          return matches[0] || null
+        }
         const readDrafts = async () => {
-          return await new Promise<Array<{ key: IDBValidKey; row: any }>>((resolve, reject) => {
+          const rows = await Promise.race([
+            readDraftsRaw(),
+            sleep(10_000).then(() => null as null | Array<{ key: IDBValidKey; row: any }>),
+          ])
+          if (!rows) throw new Error('小红书草稿库（IndexedDB）读取超时；请刷新小红书页面后重试')
+          return rows
+        }
+        const readDraftsRaw = () => {
+          return new Promise<Array<{ key: IDBValidKey; row: any }>>((resolve, reject) => {
             const open = indexedDB.open('draft-database-v1')
             open.onerror = () => reject(open.error || new Error('无法打开小红书草稿库'))
             open.onsuccess = () => {
@@ -204,15 +267,22 @@ export class XiaohongshuAdapter extends CodeAdapter {
           for (let index = 0; index < topLevel.length; index++) {
             const count = imageNodeCount(topLevel[index])
             if (count) {
-              const caption = normalizeText(nodeText(topLevel[index + 1]))
+              // 小红书当前存在两种 Tiptap 结构：图片节点后单独一个图注段，
+              // 或图片与图注文字同处一个顶层段落。优先读取图片段内文字，
+              // 只有段内无文字时才读取下一段，避免把后续正文误当成图注。
+              const inlineCaption = normalizeText(nodeText(topLevel[index]))
+              const followingCaption = normalizeText(nodeText(topLevel[index + 1]))
+              const caption = inlineCaption || followingCaption
               for (let item = 0; item < count; item++) { imageCaptions.push(caption); imageAnchors.push(anchor) }
-              if (caption) index++
+              if (!inlineCaption && followingCaption) index++
             } else if (normalizeText(nodeText(topLevel[index]))) anchor++
           }
           const body = normalizeText(topLevel.map(nodeText).filter(Boolean).join('\n'))
           const imageCount = topLevel.reduce((sum: number, node: any) => sum + imageNodeCount(node), 0)
           const key = typeof entry.key === 'string' ? `s:${entry.key}` : typeof entry.key === 'number' ? `n:${entry.key}` : `j:${encodeURIComponent(JSON.stringify(entry.key))}`
-          return { key, title, body, imageCount, imageCaptions, imageAnchors, timeStamp: Number(entry.row?.timeStamp || 0) }
+          const timeStamp = Number(entry.row?.timeStamp || entry.row?.updateTime || entry.row?.updatedAt
+            || content?.timeStamp || content?.updateTime || content?.updatedAt || 0)
+          return { key, title, body, imageCount, imageCaptions, imageAnchors, timeStamp }
         }
         try {
           if (location.hostname !== 'creator.xiaohongshu.com' || location.pathname.toLowerCase().includes('login')) {
@@ -222,21 +292,28 @@ export class XiaohongshuAdapter extends CodeAdapter {
             const shaped = draftShape(entry)
             return [shaped.key, shaped.timeStamp]
           }))
-          if (!document.querySelector('.rich-editor-container')) {
-            const enter = Array.from(document.querySelectorAll('button, [role="button"]')).find((element) => {
-              const text = normalizeText((element as HTMLElement).innerText || element.textContent)
-              return visible(element) && (text.includes('新的创作') || text.includes('写长文'))
-            }) as HTMLElement | undefined
-            enter?.click()
-          }
           let titleElement: HTMLElement | null = null
+          let editorElement: HTMLElement | null = null
+          let editor: any = null
           for (let attempt = 0; attempt < 60; attempt++) {
+            if (timedOut()) return { ok: false, error: '进入小红书“写长文”编辑器超时，已停止暂存；请刷新小红书页面后重试' }
             titleElement = findVisible(titleSelectors)
-            if (titleElement && document.querySelector('.rich-editor-container') && (window as any)._tiptap_editor) break
+            editorElement = findVisible(editorSelectors)
+            editor = resolveEditor(editorElement)
+            if (titleElement && editorElement && editor) break
+            if (attempt % 4 === 0) {
+              // 写长文首页同时存在顶部“写长文”标签和正文区“新的创作”按钮。
+              // 旧逻辑按 DOM 顺序取第一个包含匹配，常常先点中顶部标签，页面
+              // 因而一直停在入口页。必须优先精确点击“新的创作”；只有入口按钮
+              // 尚未渲染时，才点击“写长文”标签，并在后续轮次重新查找入口。
+              const create = actionByExactText('新的创作')
+              if (create) create.click()
+              else actionByExactText('写长文')?.click()
+            }
             await sleep(500)
           }
-          const editor = (window as any)._tiptap_editor
-          if (!titleElement || !editor?.commands?.setContent) return { ok: false, error: '没有进入小红书“写长文”编辑器，请返回后重新点击保存' }
+          if (!titleElement || !editorElement) return { ok: false, error: '没有进入小红书“写长文”编辑器，请返回后重新点击保存' }
+          if (!editor) return { ok: false, error: '已进入小红书长文编辑器，但未能连接当前页面的正文编辑器；页面结构可能已更新' }
           const fill = (element: HTMLElement, value: string) => {
             element.focus()
             if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -282,7 +359,12 @@ export class XiaohongshuAdapter extends CodeAdapter {
             const position = markerPosition(image.marker)
             if (position < 0) return { ok: false, error: `第 ${index + 1} 张图片的正文锚点丢失，已停止暂存` }
             editor.commands.setTextSelection(position)
-            const response = await fetch(image.source)
+            let response: Response
+            try {
+              response = await fetch(image.source, { signal: AbortSignal.timeout(30000) })
+            } catch {
+              return { ok: false, error: `第 ${index + 1} 张图片读取超时或失败，已停止暂存` }
+            }
             if (!response.ok) return { ok: false, error: `第 ${index + 1} 张图片读取失败` }
             const blob = await response.blob()
             if (blob.size > 10 * 1024 * 1024) return { ok: false, error: `第 ${index + 1} 张图片超过小红书长文 10MB 上限` }
@@ -315,7 +397,7 @@ export class XiaohongshuAdapter extends CodeAdapter {
             }
           }
           const editorText = normalizeText(editor.getText())
-          if (editorText !== normalizeText(input.body)) return { ok: false, error: '小红书长文正文写入后与源正文不一致，已停止暂存' }
+          if (comparableText(editorText) !== comparableText(input.body)) return { ok: false, error: '小红书长文正文写入后与源正文文字不一致，已停止暂存' }
           if (countImages() !== input.images.length) return { ok: false, error: '小红书长文图片数量与源文章不一致，已停止暂存' }
 
           const button = Array.from(document.querySelectorAll('button, [role="button"]')).find((element) => {
@@ -326,27 +408,54 @@ export class XiaohongshuAdapter extends CodeAdapter {
           if (button && !button.disabled) { button.click(); invoked = true }
           if (!invoked) return { ok: false, error: '小红书页面没有提供可用的“暂存离开”入口；公开发布未执行' }
 
+          let lastDrafts: ReturnType<typeof draftShape>[] = []
+          const expectedCaptions = input.images.map((image) => image.alt)
+          const expectedAnchors = input.images.map((image) => image.anchor)
+          const exactMatch = (draft: ReturnType<typeof draftShape>) => draft.title === normalizeText(input.title)
+            && comparableText(draft.body) === comparableText(input.body)
+            && draft.imageCount === input.images.length
+            && JSON.stringify(draft.imageCaptions) === JSON.stringify(expectedCaptions)
+            && JSON.stringify(draft.imageAnchors) === JSON.stringify(expectedAnchors)
           for (let attempt = 0; attempt < 40; attempt++) {
             await sleep(500)
-            const drafts = (await readDrafts()).map(draftShape)
-            const matched = drafts.find((draft) => (!beforeDrafts.has(draft.key) || draft.timeStamp > (beforeDrafts.get(draft.key) || 0))
-              && draft.title === normalizeText(input.title)
-              && draft.body === normalizeText(input.body)
-              && draft.imageCount === input.images.length)
-            if (matched) return { ok: true, draftId: matched.key, title: matched.title, body: matched.body, imageCount: matched.imageCount, imageCaptions: matched.imageCaptions, imageAnchors: matched.imageAnchors }
+            lastDrafts = (await readDrafts()).map(draftShape)
+            const exact = lastDrafts.filter(exactMatch)
+              .sort((left, right) => right.timeStamp - left.timeStamp)
+            const fresh = exact.find((draft) => !beforeDrafts.has(draft.key)
+              || draft.timeStamp > (beforeDrafts.get(draft.key) || 0))
+            const matched = fresh || exact[0]
+            // 小红书重复暂存相同长文时会复用原草稿键，而且部分版本不更新
+            // row.timeStamp。既然页面已执行“暂存离开”，只要 article-draft
+            // 对标题、正文、图片数、图注顺序和锚点全部精确匹配，就可安全
+            // 验收；不再用易变的键/时间戳把真实成功误报为失败。
+            if (matched) return {
+              ok: true, draftId: matched.key, title: matched.title, body: matched.body,
+              imageCount: matched.imageCount, imageCaptions: matched.imageCaptions,
+              imageAnchors: matched.imageAnchors, matchedExisting: !fresh,
+            }
           }
-          return { ok: false, error: '小红书页面执行了暂存，但未能从 article-draft 回读匹配的长文、图片和说明' }
+          const sameTitle = lastDrafts.find((draft) => draft.title === normalizeText(input.title))
+          const mismatch = sameTitle
+            ? `（回读图片 ${sameTitle.imageCount}/${input.images.length}；${[
+              comparableText(sameTitle.body) !== comparableText(input.body) ? '正文' : '',
+              JSON.stringify(sameTitle.imageCaptions) !== JSON.stringify(expectedCaptions) ? '图注顺序' : '',
+              JSON.stringify(sameTitle.imageAnchors) !== JSON.stringify(expectedAnchors) ? '图片位置' : '',
+            ].filter(Boolean).join('、') || '草稿内容'}仍有差异）`
+            : '（未找到同标题长文）'
+          return { ok: false, error: `小红书页面执行了暂存，但未能从 article-draft 回读完全匹配的长文${mismatch}` }
         } catch (error) { return { ok: false, error: String((error as Error)?.message || error) } }
       }, [pageArticle])
       if (!pageResult.ok || !pageResult.draftId) throw new Error(pageResult.error || '小红书草稿暂存失败')
       const checks: FidelityCheck[] = [
         { key: 'title', status: normalize(pageResult.title || '') === normalize(article.title) ? 'PASS' : 'FAIL', required: true, detail: 'IndexedDB 回读标题一致' },
-        { key: 'body-text', status: normalize(pageResult.body || '') === normalize(body) ? 'PASS' : 'FAIL', required: true, detail: 'article-draft 回读正文与图片 ALT 说明文本一致' },
+        { key: 'body-text', status: normalizeXiaohongshuBodyForComparison(pageResult.body || '') === normalizeXiaohongshuBodyForComparison(body) ? 'PASS' : 'FAIL', required: true, detail: 'article-draft 回读正文文字一致；忽略平台按节点自动生成的排版空白' },
         { key: 'image-count', status: pageResult.imageCount === canonical.images.length ? 'PASS' : 'FAIL', required: true, detail: `源 ${canonical.images.length} / 回读 ${pageResult.imageCount || 0}` },
         { key: 'image-order', status: JSON.stringify(pageResult.imageCaptions || []) === JSON.stringify(canonical.images.map((image) => image.alt)) ? 'PASS' : 'FAIL', required: true, detail: '按 article-draft 图片节点后的 ALT 原文核对顺序；不添加“图片N”前缀' },
         { key: 'image-anchor', status: JSON.stringify(pageResult.imageAnchors || []) === JSON.stringify(canonical.images.map((image) => image.anchor)) ? 'PASS' : 'FAIL', required: true, detail: '长文图片相对正文块锚点回读一致' },
         { key: 'caption-equals-html-alt', status: JSON.stringify(pageResult.imageCaptions || []) === JSON.stringify(canonical.images.map((image) => image.alt)) ? 'PASS' : 'FAIL', required: true, detail: '每张图下方仅显示 HTML img.alt 原文' },
-        { key: 'draft-indexeddb', status: 'PASS', required: true, detail: '已从 creator.xiaohongshu.com 自有 article-draft 草稿库回读' },
+        { key: 'draft-indexeddb', status: 'PASS', required: true, detail: pageResult.matchedExisting
+          ? '重复暂存复用了原草稿键；已从 article-draft 按完整内容回读确认'
+          : '已从 creator.xiaohongshu.com 自有 article-draft 草稿库回读' },
         { key: 'trusted-draft-url', status: 'PASS', required: true, detail: '小红书 HTTPS 创作中心写长文地址' },
         { key: 'draft-only', status: 'PASS', required: true, detail: '仅调用暂存回调；未调用发布回调' },
         { key: 'read-back-verified', status: 'PASS', required: true, detail: '草稿标题、正文与图片数量已回读核对' },
@@ -364,10 +473,19 @@ export class XiaohongshuAdapter extends CodeAdapter {
 
   private async ensureEditorTab(): Promise<number> {
     if (!this.runtime.tabs) throw new Error('当前运行环境不支持小红书页面安全请求')
-    if (this.editorTabId !== null) return this.editorTabId
+    if (this.editorTabId !== null) {
+      await this.runtime.tabs.activate?.(this.editorTabId)
+      await this.delay(500)
+      return this.editorTabId
+    }
     const existing = await this.runtime.tabs.query(`${EDITOR_URL}*`)
-    if (existing[0]) { this.editorTabId = existing[0].id; return existing[0].id }
-    const created = await this.runtime.tabs.create(EDITOR_URL, false)
+    if (existing[0]) {
+      this.editorTabId = existing[0].id
+      await this.runtime.tabs.activate?.(existing[0].id)
+      await this.delay(500)
+      return existing[0].id
+    }
+    const created = await this.runtime.tabs.create(EDITOR_URL, true)
     await this.runtime.tabs.waitForLoad(created.id, 45000)
     this.editorTabId = created.id
     return created.id

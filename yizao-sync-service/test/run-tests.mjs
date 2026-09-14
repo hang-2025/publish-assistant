@@ -18,6 +18,7 @@ import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
 import { ArticleService } from '../services/article-service.mjs';
 import { PlatformRegistry, platformRegistry } from '../platforms/registry.mjs';
 import { getCapabilities, checkRealActionGate } from '../lib/capabilities.mjs';
+import { movePackageToArchive } from '../lib/archive-real.mjs';
 import { writeXlsx } from '../lib/xlsx.mjs';
 import { createCommandRouter } from '../routes/command-router.mjs';
 import { parseAltFile } from '../lib/package.mjs';
@@ -257,6 +258,15 @@ test('Capabilities：服务端 Registry 元数据已合并，所有真实动作�
       assert.equal(checkRealActionGate({ action, platform: platform.id }).allowed, false);
     }
   }
+  const archiveGate = checkRealActionGate({
+    action: 'archiveMove', platform: 'toutiao',
+    authorization: { stage: '8-manual-archive', userConfirmed: true, packageVerified: true, sourceRoot: 'unpublished', targetRoot: 'archive' },
+  });
+  assert.equal(archiveGate.allowed, true, '仅服务端复核且当次确认的未归档到已归档移动可放行');
+  assert.equal(checkRealActionGate({
+    action: 'archiveMove', platform: 'toutiao',
+    authorization: { stage: '8-manual-archive', userConfirmed: false, packageVerified: true, sourceRoot: 'unpublished', targetRoot: 'archive' },
+  }).allowed, false);
 });
 
 test('Repositories：Article 隔离副本，Task 保持旧存储格式并投影 canonical 状态，Excel 只读', async () => {
@@ -307,6 +317,26 @@ test('assertRootsIndependent 拒绝嵌套/相同根目录', () => {
   assert.throws(() => assertRootsIndependent(UNPUB, UNPUB), /相同/);
   assert.throws(() => assertRootsIndependent(UNPUB, path.join(UNPUB, 'sub')), /嵌套/);
   assert.throws(() => assertRootSetIndependent({ unpublished: UNPUB, published: PUB, archive: path.join(UNPUB, '归档') }), /互相嵌套|归档目标目录/);
+});
+test('真实归档移动：原子移动文章包且拒绝覆盖同名目标', async () => {
+  const sourceRoot = path.join(ROOT, '归档移动源');
+  const targetRoot = path.join(ROOT, '归档移动目标');
+  const relativePath = path.join('主流平台', 'toutiao', '测试分类', '2026-09-14', '归档包');
+  const sourcePackage = path.join(sourceRoot, relativePath);
+  const targetPackage = path.join(targetRoot, relativePath);
+  await fs.mkdir(sourcePackage, { recursive: true });
+  await fs.mkdir(targetRoot, { recursive: true });
+  await fs.writeFile(path.join(sourcePackage, 'marker.txt'), 'archive-without-excel');
+  const moved = await movePackageToArchive({ sourceRoot, archiveRoot: targetRoot, relativePath });
+  assert.equal(moved.moved, true);
+  assert.equal(fss.existsSync(sourcePackage), false);
+  assert.equal(await fs.readFile(path.join(targetPackage, 'marker.txt'), 'utf8'), 'archive-without-excel');
+
+  await fs.mkdir(sourcePackage, { recursive: true });
+  await fs.writeFile(path.join(sourcePackage, 'marker.txt'), 'must-not-overwrite');
+  await assert.rejects(() => movePackageToArchive({ sourceRoot, archiveRoot: targetRoot, relativePath }), /同名文章包/);
+  assert.equal(await fs.readFile(path.join(targetPackage, 'marker.txt'), 'utf8'), 'archive-without-excel');
+  assert.equal(await fs.readFile(path.join(sourcePackage, 'marker.txt'), 'utf8'), 'must-not-overwrite');
 });
 test('跨进程锁：互斥与接管', async () => {
   const dir = path.join(ROOT, 'locks');
@@ -440,6 +470,14 @@ test('scan：识别全部夹具包并报告预期问题；junction 被跳过', a
   assert.ok(emptyAlt.issues.some((i) => i.includes('ALT 为空')));
 });
 
+test('scan：已归档目录可只读扫描，不创建、移动或删除文件', async () => {
+  const before = await fs.readdir(ARCHIVE);
+  const r = await call({ command: 'scan', payload: { root: 'archive' } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.root, 'archive');
+  assert.deepEqual(await fs.readdir(ARCHIVE), before);
+});
+
 test('getPackage：返回图片/ALT/乱序说明；缺图与同名如实报告', async () => {
   const normal = scanned.find((p) => p.title === '正常文章包');
   const r = await call({ command: 'getPackage', payload: { packageId: normal.packageId } });
@@ -482,10 +520,40 @@ test('getPackage：伪造包 ID 被拒绝', async () => {
   assert.notEqual(r2.status, 200);
 });
 
+test('archivePackage：当次确认后只移动到已归档目录，不写 Excel、不覆盖', async () => {
+  const relativePath = path.join('主流平台', 'toutiao', '测试产品', '2026-09-14', '仅归档测试包');
+  const sourcePackage = path.join(UNPUB, relativePath);
+  const targetPackage = path.join(ARCHIVE, relativePath);
+  await makePackage(sourcePackage, { images: ['1-图.png'], alts: ['归档 ALT'], htmlImgs: ['1-图.png'] });
+  const excelBefore = await fs.readFile(PLAN_XLSX);
+  const scanResult = await call({ command: 'scan', payload: { root: 'unpublished' } });
+  const archivePkg = scanResult.json.packages.find((pkg) => pkg.title === '仅归档测试包');
+  assert.ok(archivePkg?.packageId);
+
+  const denied = await call({ command: 'archivePackage', payload: { packageId: archivePkg.packageId, userConfirmed: false } });
+  assert.equal(denied.status, 422);
+  assert.equal(fss.existsSync(sourcePackage), true);
+  const extra = await call({ command: 'archivePackage', payload: { packageId: archivePkg.packageId, userConfirmed: true, excel: true } });
+  assert.equal(extra.status, 422, '归档接口拒绝 Excel 等额外参数');
+
+  const archived = await call({ command: 'archivePackage', payload: { packageId: archivePkg.packageId, userConfirmed: true } });
+  assert.equal(archived.status, 200, JSON.stringify(archived.json));
+  assert.equal(archived.json.moved, true);
+  assert.equal(archived.json.excelWritten, false);
+  assert.equal(fss.existsSync(sourcePackage), false);
+  assert.equal(fss.existsSync(targetPackage), true);
+  assert.deepEqual(await fs.readFile(PLAN_XLSX), excelBefore, '归档不得写 Excel');
+  const stale = await call({ command: 'archivePackage', payload: { packageId: archivePkg.packageId, userConfirmed: true } });
+  assert.equal(stale.status, 422, '同一包 ID 不能重复执行移动');
+});
+
 test('已发布目录独立扫描', async () => {
   const r = await call({ command: 'scan', payload: { root: 'published' } });
   assert.equal(r.status, 200);
-  assert.equal(r.json.packages.filter((p) => p.packageId).length, 1);
+  assert.equal(r.json.packages.filter((p) => p.packageId).length, 1, '单篇归档不得混入已发布目录');
+  const archived = await call({ command: 'scan', payload: { root: 'archive' } });
+  assert.equal(archived.status, 200);
+  assert.equal(archived.json.packages.filter((p) => p.packageId).length, 1, '已归档目录应新增且只新增目标单篇');
 });
 
 test('服务重启后旧包 ID 失效（不复活旧授权）', async () => {

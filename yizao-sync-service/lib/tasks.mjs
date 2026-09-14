@@ -134,7 +134,9 @@ export class TaskStore {
   _isBusy(task) {
     if (!task) return false;
     if (task.runState === 'terminal') return false;
+    if ([TASK_STATUS.FAILED, TASK_STATUS.CANCELLED].includes(task.status)) return false;
     if (task.states?.draft?.stage === '失败') return false;
+    if (task.states?.draft?.stage === '结果待核对（重启中断）') return false;
     return true;
   }
 
@@ -192,12 +194,18 @@ export class TaskStore {
     const tasks = await this.listTasks();
     let changed = 0;
     for (const t of tasks) {
-      if (this._isBusy(t) && t.states?.draft?.stage !== '结果待核对（重启中断）') {
+      const protectedDraft = String(t.mode || '').endsWith('-draft');
+      const legacyInterruptedDraft = protectedDraft
+        && t.runState === 'stalled'
+        && t.states?.draft?.stage === '结果待核对（重启中断）'
+        && ![TASK_STATUS.FAILED, TASK_STATUS.CANCELLED, TASK_STATUS.PUBLISHED].includes(t.status);
+      if (legacyInterruptedDraft || this._isBusy(t)) {
         const now = stageTime();
-        if (t.mode === 'zhihu-draft') {
+        if (protectedDraft) {
           t.status = TASK_STATUS.FAILED;
-          t.states.draft = { stage: TASK_STATUS.FAILED, detail: '任务执行时服务或扩展中断，结果未知。不会自动重发；请先在知乎草稿箱人工核对。', updatedAt: now };
+          t.states.draft = { stage: TASK_STATUS.FAILED, detail: `任务执行时服务或扩展中断，结果未知。不会自动重发；请先在${t.platformName || '平台'}草稿箱人工核对。`, updatedAt: now };
           t.runState = 'stalled';
+          t.finishedAt = now;
           t.history.push({ at: now, stage: TASK_STATUS.FAILED, detail: '重启恢复：结果未知，未自动重发' });
           t.updatedAt = now;
           await this.saveTask(t);

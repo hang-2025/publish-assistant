@@ -1,6 +1,6 @@
 # 易造发布助手 · 本地服务（受保护单篇草稿）
 
-保留阶段 1A~2J 的只读/模拟能力，并提供受保护的知乎、搜狐号、头条号、网易号单篇保存草稿协调。发布包 HTML 先经扩展的 Canonical Article 层解析，平台回读后只有必需的 Fidelity Report 检查全部 PASS，服务才接受 `draft_saved`。公开发布、独立真实上传、Excel 写入、文件移动/删除与真实归档仍没有命令；服务不会保存 Chrome Cookie/Profile，也不会修改文章或 Excel。
+保留阶段 1A~2J 的只读/模拟能力，并提供受保护的知乎、搜狐号、头条号、网易号单篇保存草稿协调。发布包 HTML 先经扩展的 Canonical Article 层解析，平台回读后只有必需的 Fidelity Report 检查全部 PASS，服务才接受 `draft_saved`。公开发布、独立真实上传与 Excel 写入仍没有命令；另提供一个范围严格受限的单包手动归档命令，只把用户当次确认且经服务端复核的文章包从未归档目录移动到已归档目录。服务不会保存 Chrome Cookie/Profile，也不会修改文章或 Excel。
 
 ## 运行步骤
 
@@ -29,15 +29,16 @@ node server.mjs
 | 命令 | 说明 |
 |---|---|
 | `getConfig` | 读取目录配置状态 |
-| `setConfig` | 设置未发布/已发布/归档目标授权目录和登记表 `.xlsx` 路径（只写本服务自身 `data/config.json`，不创建目录，拒绝互相嵌套） |
+| `setConfig` | 分别设置未发布、已发布、已归档授权目录和登记表 `.xlsx` 路径（只写本服务自身 `data/config.json`，不创建目录，拒绝互相嵌套） |
 | `scan` | 只读扫描授权目录，返回文章卡片与问题摘要 |
 | `getPackage` | 按受控包 ID 读取发布包详情（SEO、正文 HTML、图片 dataUrl、ALT、校验报告） |
+| `archivePackage` | 当次确认后把一个已扫描包从未归档目录原子移动到独立的已归档目录；不进入已发布目录，不写 Excel、不发布、不覆盖同名目标 |
 | `prepareOfficialTask` | 官网/百家号只生成发送快照与执行预览，不创建任务、不启动执行器 |
 | `simulateOfficialTask` | 官网/百家号仅本地模拟状态机，终态停在“等待用户最终提交（模拟）” |
 | `getTasks` / `getTask` / `removeTask` | 查看/读取/清理纯模拟任务记录 |
 | `previewExcelRegistration` | 按已配置 Excel 路径做登记匹配只读预览；只读工作簿，不写单元格、不登记、不归档 |
 | `getCapabilities` | 返回平台能力矩阵：可模拟、草稿模拟、待适配、风险与验收状态 |
-| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅内部满足对应独立阶段、当次确认与快照复核的 `zhihu/sohu/toutiao/netease/xiaohongshu.saveDraft` 可放行 |
+| `checkRealActionGate` | 查询真实动作闸门；默认拒绝，仅受保护的单篇 `saveDraft`，或服务端复核且用户当次确认的 `unpublished → archive` 单包归档可放行 |
 | `preflightPackage` | 发布前总预演：汇总发送快照、Excel 匹配、归档目标和真实动作闸门；只读不执行 |
 | `generateRealExecutionChecklist` | 生成真实执行验收单和单篇小样本验收模板；只读返回 Markdown，不创建任务、不写文件、不上传、不发布、不登记、不归档 |
 | `getShareableConfigTemplate` / `importShareableConfigTemplate` | 导出/导入不含个人路径、令牌和扩展 ID 的团队规则 |
@@ -55,7 +56,7 @@ node server.mjs
 | `prepare/begin/advance/complete/failNeteaseDraft` | 网易号受保护草稿的同等五步握手；要求官方风控令牌、独立快照、确认、回读和失败记录 |
 | `prepare/begin/advance/complete/failXiaohongshuDraft` | 小红书受保护图文草稿的同等五步握手；要求独立快照、当次确认及创作中心 IndexedDB 标题/正文/图片数量回读 |
 
-任何其他命令（包括 publish/archive 等）都会被白名单拒绝。
+任何其他命令（包括公开 publish、Excel 写入、任意路径移动或批量删除等）都会被白名单拒绝。
 
 ## 架构分层
 
@@ -75,7 +76,8 @@ node server.mjs
 - 令牌校验使用时间安全比较；
 - `getPackage` 只接受 `scan` 签发的包 ID（服务内存态，重启失效需重新扫描），不接受路径；
 - `previewExcelRegistration` / `preflightPackage` 同样只接受受控包 ID，并且只读取 `setConfig` 已保存的 `.xlsx` 文件；不接受任意 Excel 路径参数；
-- `checkRealActionGate` 默认返回 `allowed=false`；仅服务内部复核过的 `zhihu/sohu/toutiao/netease/xiaohongshu.saveDraft` 当次授权可例外放行；
+- `checkRealActionGate` 默认返回 `allowed=false`；仅服务内部复核过的受保护 `saveDraft`，以及当次确认的单包“未归档 → 已归档”移动可例外放行；
+- `archivePackage` 只接受扫描签发的包 ID；复核源包仍在未归档根目录、目标仍在已归档根目录，拒绝链接/junction、越界、同名覆盖和进行中的任务；命令不接收 Excel 参数；
 - 所有文件访问经过 `resolveInside`：`fs.realpath` 解析 Windows junction/符号链接后复核仍位于授权根目录内；扫描不深入符号链接目录；
 - 请求体按 UTF-8 实际字节限制为 1MB。
 
@@ -90,7 +92,7 @@ npm test
 ## 本阶段未实现（已知风险）
 
 - 未接入官网/百家号真实执行器（跨进程互斥已有 `lib/mutex.mjs` 设计与测试，但未启动任何浏览器）；
-- 未实现 Excel 写入登记与真实归档（旧 `archive.mjs` 的破坏性操作未复制启用）；
+- 未实现 Excel 写入登记、批量归档、跨磁盘复制归档或自动清理空目录；当前只允许同磁盘内经确认的单包原子移动；
 - 未做图片分块传输（当前 getPackage 整包返回，大图场景待后续阶段）；
 - 当前采用“首次持令牌配对时绑定扩展 ID”；正式分发时仍需确定固定扩展 ID、令牌轮换和解除配对的安装流程。
 - 知乎、搜狐号、头条号、网易号真实草稿实现均尚未用各自专用测试账号完成人工验收，所以能力表仍保持 `verified=false`、`saveDraft=false`；平台页面或接口变化仍可能导致实际验收失败。

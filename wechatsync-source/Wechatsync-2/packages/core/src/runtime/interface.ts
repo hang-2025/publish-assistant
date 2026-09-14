@@ -84,6 +84,8 @@ export interface RuntimeInterface {
      * 创建新 tab
      */
     create(url: string, active?: boolean): Promise<{ id: number }>
+    /** 激活目标 tab，避免后台页面计时器被浏览器节流。 */
+    activate?(tabId: number): Promise<void>
     /**
      * 等待 tab 加载完成
      */

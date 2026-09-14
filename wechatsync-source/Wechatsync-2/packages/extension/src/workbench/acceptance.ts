@@ -1,3 +1,6 @@
+// UI-only workflow improvements do not change the local-service contract. Keep the
+// stable acceptance identity so an already loaded compatible extension is not
+// needlessly blocked whenever the workbench UI is rebuilt.
 export const EXTENSION_BUILD_ID = 'stage7-caption-cleanup-v3.8'
 export const ACCEPTANCE_PACKAGE_VERSION = 38
 export const ACCEPTANCE_PACKAGE_LABEL = '3.8'

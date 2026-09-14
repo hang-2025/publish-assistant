@@ -14,6 +14,18 @@ import {
 
 const logger = createLogger('Sohu')
 
+/**
+ * 搜狐编辑器对 figure/figcaption 的布局不稳定，可能把后续正文排到图片右侧。
+ * 使用其稳定保留的段落图片结构，并用 br 将可见图注留在同一图片块中；
+ * canonical 回读会把这一结构仍识别为一张图片及其 ALT 图注。
+ */
+function normalizeSohuImageLayout(content: string): string {
+  return content.replace(
+    /<figure>\s*(<img\b[^>]*?)>\s*<figcaption>([\s\S]*?)<\/figcaption>\s*<\/figure>/gi,
+    '<p style="clear:both;text-align:center;margin:20px 0;">$1 style="display:block;float:none;max-width:100%;height:auto;margin:0 auto;"><br><span style="display:block;margin-top:8px;line-height:1.7;">$2</span></p>',
+  )
+}
+
 interface SohuAccountInfo {
   id: string
   nickName: string
@@ -49,6 +61,36 @@ export class SohuAdapter extends CodeAdapter {
   private accountInfo: SohuAccountInfo | null = null
   private deviceId: string = generateDeviceId()
   private spCm: string = ''
+
+  /**
+   * 搜狐当前编辑器以页面 vuex.app.userInfo 作为正在操作的子账号。
+   * 账号列表的第一项不一定是当前选中项，因此只能在受信任的搜狐页中读取，
+   * 并再次与 listV2 返回的账号集合交叉验证后使用。
+   */
+  private async getSelectedPageAccount(accounts: SohuAccountInfo[]): Promise<SohuAccountInfo | null> {
+    if (!this.runtime.tabs) return null
+    try {
+      const tabs = await this.runtime.tabs.query('https://mp.sohu.com/*')
+      for (const tab of tabs) {
+        const selected = await this.runtime.tabs.executeScript(tab.id, () => {
+          try {
+            const state = JSON.parse(localStorage.getItem('vuex') || 'null')
+            const account = state?.app?.userInfo
+            if (!account?.id) return null
+            return { id: String(account.id), nickName: String(account.nickName || ''), avatar: String(account.avatar || '') }
+          } catch {
+            return null
+          }
+        }, [])
+        if (!selected?.id) continue
+        const verified = accounts.find((account) => String(account.id) === selected.id)
+        if (verified) return verified
+      }
+    } catch (error) {
+      logger.debug('Could not read selected Sohu account from page:', error)
+    }
+    return null
+  }
 
   /** 搜狐号 API 需要的 Header 规则 */
   private readonly HEADER_RULES = [
@@ -101,8 +143,8 @@ export class SohuAdapter extends CodeAdapter {
         return { isAuthenticated: false }
       }
 
-      // 默认使用第一个子账号
-      this.accountInfo = allAccounts[0]
+      // 优先使用搜狐页面当前选中的子账号；没有打开页面时才回退到第一项。
+      this.accountInfo = await this.getSelectedPageAccount(allAccounts) || allAccounts[0]
       logger.info(`Using account: ${this.accountInfo.nickName} (id: ${this.accountInfo.id})` +
         (allAccounts.length > 1 ? `, ${allAccounts.length} sub-accounts available` : ''))
 
@@ -178,7 +220,7 @@ export class SohuAdapter extends CodeAdapter {
       const canonical = parseCanonicalArticle(article.html || '', article.title)
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
-      let content = renderCanonicalArticle(canonical)
+      let content = normalizeSohuImageLayout(renderCanonicalArticle(canonical))
 
       // Process images
       await options?.onDraftStage?.('uploading')
@@ -215,7 +257,9 @@ export class SohuAdapter extends CodeAdapter {
         visibleToLoginedUsers: 0,
         attrIds: [],
         auto: true,
-        accountId: Number(this.accountInfo!.id),
+        // 搜狐账号 ID 必须原样保留。转换成 Number 可能让长 ID 精度丢失，
+        // 并导致页面已保存而接口回读提示“账号不存在”。
+        accountId: String(this.accountInfo!.id),
       }
 
       await options?.onDraftStage?.('saving_draft')
@@ -237,17 +281,20 @@ export class SohuAdapter extends CodeAdapter {
       const res = await response.json() as {
         success?: boolean
         code?: number
-        data?: string | number
+        data?: string | number | { id?: string | number; newsId?: string | number }
         msg?: string
       }
 
       logger.debug(' Save response:', res)
 
-      if (res.success !== true && res.code !== 2000000) {
+      const rawPostId = typeof res.data === 'object' && res.data
+        ? (res.data.id ?? res.data.newsId)
+        : res.data
+      const postId = String(rawPostId || '')
+      const saveCodeAccepted = res.success === true || [1, 100, 200, 2000, 2000000].includes(Number(res.code))
+      if (!saveCodeAccepted) {
         throw new Error(res.msg || '保存失败')
       }
-
-      const postId = String(res.data || '')
       if (!/^[0-9]+$/.test(postId)) throw new Error('搜狐保存草稿响应缺少有效草稿 ID')
 
       // 保存后必须从搜狐草稿详情接口回读；仅收到 ID 不算成功。
@@ -266,13 +313,20 @@ export class SohuAdapter extends CodeAdapter {
       if (!readBackResponse.ok) throw new Error(`搜狐草稿回读失败: ${readBackResponse.status}`)
       const readBackEnvelope = await readBackResponse.json() as {
         code?: number
+        success?: boolean
+        msg?: string
         data?: { news?: { id?: string | number; title?: string; content?: string }; id?: string | number; title?: string; content?: string }
       }
-      if (readBackEnvelope.code !== undefined && readBackEnvelope.code !== 2000000) {
-        throw new Error('搜狐草稿回读接口返回失败')
-      }
       const readBack = readBackEnvelope.data?.news || readBackEnvelope.data || {}
-      if (String(readBack.id || '') !== postId || !String(readBack.content || '').trim()) {
+      const readBackMatches = String(readBack.id || '') === postId && Boolean(String(readBack.content || '').trim())
+      // 搜狐当前内容管理微前端直接以 data.news/data 为准；不同网关可能
+      // 返回 2000 或 2000000。只有精确匹配本次草稿 ID 且正文非空才放行，
+      // 因而无需依赖易变的业务成功码，也不会把失败包误判为成功。
+      if (!readBackMatches && (readBackEnvelope.success === false
+        || (readBackEnvelope.code !== undefined && ![2000, 2000000].includes(readBackEnvelope.code)))) {
+        throw new Error(readBackEnvelope.msg || `搜狐草稿回读接口返回失败（code ${readBackEnvelope.code ?? 'unknown'}）`)
+      }
+      if (!readBackMatches) {
         throw new Error('搜狐草稿回读内容与本次保存不一致')
       }
 

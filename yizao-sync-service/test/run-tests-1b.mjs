@@ -26,6 +26,7 @@ import {
   buildCopyPlan, makeOperationId, resolveArchivePaths, inspectTargetAgainstPlan,
 } from '../lib/archive-sim.mjs';
 import { checkRealActionGate, getCapabilities } from '../lib/capabilities.mjs';
+import { TASK_STATUS } from '../domain/status.mjs';
 
 /**
  * 阶段1B 测试：全部在系统临时目录中构造夹具，不读取、不修改真实文章目录与真实 Excel。
@@ -336,6 +337,40 @@ test('重启恢复：中间态标记「结果待核对（重启中断）」，�
   const retry = await store2.createTask({ ...baseInput, taskKey: key, platform: 'baijiahao', platformName: '百家号', platformKind: 'baijiahao', accountId: 'baijiahao-占位账号', contentVersion: 'r'.repeat(64) });
   assert.equal(retry.created, true, '清理中断记录后可重新模拟');
   await store2.removeTask(retry.task.taskId);
+});
+
+test('重启恢复：所有受保护草稿任务同步置为 failed，不残留 saving_draft 账号锁', async () => {
+  const key = makeTaskKey({ packageId: 'pkg-xhs-recovery', platform: 'xiaohongshu', accountId: 'xiaohongshu-current-session', contentVersion: 's'.repeat(64) });
+  const created = await store.createTask({
+    ...baseInput, taskKey: key, packageId: 'pkg-xhs-recovery', platform: 'xiaohongshu', platformName: '小红书',
+    accountId: 'xiaohongshu-current-session', contentVersion: 's'.repeat(64), mode: 'xiaohongshu-draft',
+  });
+  assert.equal(created.created, true);
+  await store.transitionStatus(created.task.taskId, TASK_STATUS.VALIDATING);
+  await store.transitionStatus(created.task.taskId, TASK_STATUS.READY);
+  await store.transitionStatus(created.task.taskId, TASK_STATUS.RUNNING);
+    await store.transitionStatus(created.task.taskId, TASK_STATUS.UPLOADING);
+    await store.transitionStatus(created.task.taskId, TASK_STATUS.FILLING);
+    await store.transitionStatus(created.task.taskId, TASK_STATUS.SAVING_DRAFT);
+
+    // 复现旧版本留下的矛盾状态：明细已标记重启中断，顶层仍是 saving_draft。
+    const legacyInterrupted = await store.getTask(created.task.taskId);
+    legacyInterrupted.states.draft = {
+      stage: '结果待核对（重启中断）',
+      detail: '旧版本重启恢复记录',
+      updatedAt: legacyInterrupted.updatedAt,
+    };
+    legacyInterrupted.runState = 'stalled';
+    await store.saveTask(legacyInterrupted);
+
+    const restarted = new TaskStore(storeDir);
+  assert.equal(await restarted.recoverInterrupted(), 1);
+  const recovered = await restarted.getTask(created.task.taskId);
+  assert.equal(recovered.status, TASK_STATUS.FAILED);
+  assert.equal(recovered.states.draft.stage, TASK_STATUS.FAILED);
+  assert.equal(recovered.runState, 'stalled');
+  assert.ok(recovered.finishedAt);
+  assert.equal(await restarted.findBusyByAccount('xiaohongshu-current-session'), null);
 });
 
 test('removeTask：涉及真实状态的记录不可删除', async () => {

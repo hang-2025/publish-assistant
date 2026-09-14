@@ -257,6 +257,10 @@ test('NetEase draft task requires immutable snapshot, guardian check and verifie
   assert.equal(done.states.publish.status, '未发布');
   assert.equal(done.states.excel.status, '未登记');
   assert.equal(done.states.archive.status, '未归档');
+  const resave = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(resave.started, true, '草稿已保存后用户再次确认即允许重复保存');
+  assert.equal(resave.task.retryOfTaskId, prepared.task.taskId);
+  assert.match(resave.task.taskKey, /:retry:2$/);
 });
 
 test('NetEase draft task allows a confirmed retry when image upload failed before saving', async (t) => {
@@ -318,6 +322,10 @@ test('Toutiao draft task requires immutable snapshot and verified readback', asy
   assert.equal(done.states.publish.status, '未发布');
   assert.equal(done.states.excel.status, '未登记');
   assert.equal(done.states.archive.status, '未归档');
+  const resave = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(resave.started, true, '草稿已保存后用户再次确认即允许重复保存');
+  assert.equal(resave.task.retryOfTaskId, prepared.task.taskId);
+  assert.match(resave.task.taskKey, /:retry:2$/);
 });
 
 test('Toutiao draft task rejects untrusted URL and source mutation', async (t) => {
@@ -336,7 +344,7 @@ test('Toutiao draft task rejects untrusted URL and source mutation', async (t) =
   assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
 });
 
-test('Toutiao draft task permits an explicit retry only when failure happened before save request', async (t) => {
+test('Toutiao draft task permits explicit re-saves while an in-flight task still blocks double clicks', async (t) => {
   const safe = await toutiaoFixture(); t.after(() => fs.rm(safe.dir, { recursive: true, force: true }));
   const first = await safe.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
   await safe.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
@@ -358,9 +366,9 @@ test('Toutiao draft task permits an explicit retry only when failure happened be
     await uncertain.service.progress({ taskId: saving.task.taskId, status });
   }
   await uncertain.service.fail({ taskId: saving.task.taskId, error: '保存响应未知' });
-  const blocked = await uncertain.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
-  assert.equal(blocked.started, false);
-  assert.equal(blocked.reason, 'manual-review-required');
+  const confirmedRetry = await uncertain.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(confirmedRetry.started, true, '终态失败后用户再次确认即允许重新保存');
+  assert.equal(confirmedRetry.task.retryOfTaskId, saving.task.taskId);
 });
 
 async function sohuFixture() {
@@ -394,6 +402,22 @@ test('Sohu draft task requires immutable snapshot and verified readback', async 
   assert.equal(done.states.publish.status, '未发布');
   assert.equal(done.states.excel.status, '未登记');
   assert.equal(done.states.archive.status, '未归档');
+  const resave = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(resave.started, true, '草稿已保存后用户再次确认即允许重复保存');
+  assert.equal(resave.task.retryOfTaskId, prepared.task.taskId);
+  assert.match(resave.task.taskKey, /:retry:2$/);
+});
+
+test('Sohu draft task allows a confirmed retry when image upload failed before saving', async (t) => {
+  const f = await sohuFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const first = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: first.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.fail({ taskId: first.task.taskId, error: '图片上传在保存请求前失败' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  assert.match(retry.task.taskKey, /:retry:2$/);
 });
 
 test('Sohu draft task rejects untrusted URL, incomplete fidelity and source mutation', async (t) => {
@@ -441,6 +465,26 @@ test('Zhihu draft task follows durable happy path and blocks duplicate', async (
   assert.equal(done.states.publish.status, '未发布');
   assert.equal(done.states.excel.status, '未登记');
   assert.equal(done.states.archive.status, '未归档');
+  const resave = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(resave.started, true, '草稿已保存后用户再次确认即允许重复保存');
+  assert.equal(resave.task.retryOfTaskId, prepared.task.taskId);
+  assert.match(resave.task.taskKey, /:retry:2$/);
+  const whileInFlight = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(whileInFlight.reason, 'exists', '新任务执行中仍阻止连续双击');
+});
+
+test('Zhihu draft task allows a confirmed retry when image upload failed before saving', async (t) => {
+  const f = await fixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const first = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: first.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.fail({ taskId: first.task.taskId, error: '图片处理超时' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  assert.match(retry.task.taskKey, /:retry:2$/);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists', '新的重试任务仍应阻止连续双击');
 });
 
 test('draft saved without required fidelity cannot become draft_saved', async (t) => {

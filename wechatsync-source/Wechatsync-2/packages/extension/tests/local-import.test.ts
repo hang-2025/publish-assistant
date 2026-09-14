@@ -6,8 +6,8 @@ import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
 import { SohuAdapter } from '../../core/src/adapters/platforms/sohu'
 import { ToutiaoAdapter } from '../../core/src/adapters/platforms/toutiao'
-import { NeteaseAdapter } from '../../core/src/adapters/platforms/netease'
-import { XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
+import { NeteaseAdapter, validateNeteaseFidelity } from '../../core/src/adapters/platforms/netease'
+import { normalizeXiaohongshuBodyForComparison, XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -35,11 +35,18 @@ function xiaohongshuRuntime(pageResult: any) {
     type: 'extension', fetch: vi.fn(),
     cookies: { get: vi.fn(), set: vi.fn(), remove: vi.fn() }, storage: { get: vi.fn(), set: vi.fn(), remove: vi.fn() }, session: { get: vi.fn(), set: vi.fn() },
     dom: { parseHTML: vi.fn(), querySelector: vi.fn(), querySelectorAll: vi.fn(), getTextContent: vi.fn(), getInnerHTML: vi.fn() },
-    tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(), executeScript },
+    tabs: { query: vi.fn().mockResolvedValue([{ id: 7 }]), create: vi.fn(), activate: vi.fn(), waitForLoad: vi.fn(), executeScript },
   } as any
 }
 
 describe('guarded Xiaohongshu draft adapter', () => {
+  it('ignores only platform-generated layout whitespace when comparing long-article text', () => {
+    const source = '港区对象主要作用\n\n雷电预警提示雷暴临近信息'
+    const readBack = '港区对象\t主要作用\n雷电预警\u200B提示雷暴临近信息'
+    expect(normalizeXiaohongshuBodyForComparison(readBack)).toBe(normalizeXiaohongshuBodyForComparison(source))
+    expect(normalizeXiaohongshuBodyForComparison(`${readBack}已修改`)).not.toBe(normalizeXiaohongshuBodyForComparison(source))
+  })
+
   it('rejects public publish and taskless saveDraft', async () => {
     const adapter = new XiaohongshuAdapter()
     await adapter.init(xiaohongshuRuntime({ ok: false }))
@@ -81,6 +88,52 @@ describe('guarded Xiaohongshu draft adapter', () => {
     expect(runtime.tabs.query).toHaveBeenCalledWith(expect.stringContaining('target=article'))
     expect(result.postUrl).toContain('target=article')
     expect(result.fidelityReport?.checks.find((item) => item.key === 'image-order')?.status).toBe('PASS')
+  })
+
+  it('prioritizes the exact new-creation action over the long-article navigation tab', async () => {
+    const adapter = new XiaohongshuAdapter()
+    const runtime = xiaohongshuRuntime({
+      ok: true, draftId: 's:entry-priority', title: '入口测试', body: '正文\n\n现场图',
+      imageCount: 1, imageCaptions: ['现场图'], imageAnchors: [1],
+    })
+    await adapter.init(runtime)
+    await adapter.checkAuth()
+    const result = await adapter.saveDraft({
+      title: '入口测试', html: '<p>正文</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="现场图">', markdown: '',
+    }, { draftOnly: true, draftAuthorization: xiaohongshuDraftAuthorization })
+
+    expect(result.success).toBe(true)
+    const pageProcedure = String(runtime.tabs.executeScript.mock.calls[1][1])
+    const createAction = pageProcedure.search(/actionByExactText\((['"])新的创作\1\)/)
+    const navigationFallback = pageProcedure.search(/actionByExactText\((['"])写长文\1\)/)
+    expect(createAction).toBeGreaterThan(-1)
+    expect(navigationFallback).toBeGreaterThan(createAction)
+    expect(pageProcedure).not.toMatch(/text\.includes\((['"])写长文\1\)/)
+    expect(runtime.tabs.activate).toHaveBeenCalledWith(7)
+    expect(pageProcedure).toContain('button, [role="button"], a, div, span')
+    expect(pageProcedure).toContain('[contenteditable="true"].ProseMirror')
+    expect(pageProcedure).toContain('__reactFiber$')
+    expect(pageProcedure).toContain('memoizedProps?.editor')
+    expect(pageProcedure).toContain('fresh || exact[0]')
+    expect(pageProcedure).toContain('JSON.stringify(draft.imageCaptions) === JSON.stringify(expectedCaptions)')
+    expect(pageProcedure).toContain('JSON.stringify(draft.imageAnchors) === JSON.stringify(expectedAnchors)')
+    expect(pageProcedure).toContain('const caption = inlineCaption || followingCaption')
+    expect(pageProcedure).toContain('if (!inlineCaption && followingCaption)')
+  })
+
+  it('accepts an unchanged reused draft key only after complete content readback matches', async () => {
+    const adapter = new XiaohongshuAdapter()
+    const runtime = xiaohongshuRuntime({
+      ok: true, draftId: 's:reused-key', title: '重复暂存', body: '正文\n\n现场图',
+      imageCount: 1, imageCaptions: ['现场图'], imageAnchors: [1], matchedExisting: true,
+    })
+    await adapter.init(runtime)
+    await adapter.checkAuth()
+    const result = await adapter.saveDraft({
+      title: '重复暂存', html: '<p>正文</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="现场图">', markdown: '',
+    }, { draftOnly: true, draftAuthorization: xiaohongshuDraftAuthorization })
+    expect(result.success).toBe(true)
+    expect(result.fidelityReport?.checks.find((item) => item.key === 'draft-indexeddb')?.detail).toContain('复用了原草稿键')
   })
 })
 
@@ -177,6 +230,43 @@ describe('guarded Sohu draft adapter', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('/account/listV2')
   })
 
+  it('uses the currently selected Sohu sub-account and preserves a long account id as text', async () => {
+    const firstId = '91000000000000000001'
+    const selectedId = '91000000000000000009'
+    let savedBody: any = null
+    let savedUrl = ''
+    const runtime = zhihuRuntime(async (url, options) => {
+      if (url.includes('/mpbp/bp/account/listV2')) return new Response(JSON.stringify({
+        code: 2000000,
+        data: { data: [{ accountInfos: [
+          { id: firstId, nickName: '列表首号', avatar: '' },
+          { id: selectedId, nickName: '当前选中号', avatar: '' },
+        ] }] },
+      }), { status: 200 })
+      if (url.includes('/news/v4/news/draft/v2') && options?.method === 'POST') {
+        savedUrl = url
+        savedBody = JSON.parse(String(options.body))
+        return new Response(JSON.stringify({ code: 2000, data: { id: 35791 } }), { status: 200 })
+      }
+      if (url.includes('/news/v4/article?newsId=35791')) return new Response(JSON.stringify({
+        code: 2000, data: { news: { id: 35791, title: '多账号测试', content: savedBody.content } },
+      }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    })
+    runtime.tabs = {
+      query: vi.fn().mockResolvedValue([{ id: 7, url: 'https://mp.sohu.com/mpfe/v4/' }]),
+      create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn().mockResolvedValue({ id: selectedId, nickName: '当前选中号', avatar: '' }),
+    }
+    const adapter = new SohuAdapter()
+    await adapter.init(runtime)
+    const result = await adapter.saveDraft({ title: '多账号测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: sohuDraftAuthorization })
+    expect(result.success).toBe(true)
+    expect(savedBody.accountId).toBe(selectedId)
+    expect(typeof savedBody.accountId).toBe('string')
+    expect(savedUrl).toContain(`accountId=${selectedId}`)
+  })
+
   it('rejects public publish and taskless saveDraft', async () => {
     const adapter = new SohuAdapter()
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
@@ -210,8 +300,46 @@ describe('guarded Sohu draft adapter', () => {
     expect(result.postUrl).toContain('contentStatus=2&id=24680')
     expect(result.readBackVerified).toBe(true)
     expect(result.fidelityVerified).toBe(true)
-    expect(savedContent).toContain('<figcaption>搜狐图片注释</figcaption>')
+    expect(savedContent).toContain('<p style="clear:both;text-align:center;margin:20px 0;"><img')
+    expect(savedContent).toContain('style="display:block;float:none;max-width:100%;height:auto;margin:0 auto;"')
+    expect(savedContent).toContain('<br><span style="display:block;margin-top:8px;line-height:1.7;">搜狐图片注释</span></p>')
+    expect(savedContent).toContain('</span></p><p><strong>后文</strong></p>')
+    expect(savedContent).not.toContain('<figure>')
+    expect(savedContent).not.toContain('<figcaption>')
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+  })
+
+  it('accepts the current Sohu readback business code when exact draft id and content match', async () => {
+    let savedContent = ''
+    const adapter = new SohuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.includes('/mpbp/bp/account/listV2')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accountInfos: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
+      if (url.includes('/news/v4/news/draft/v2') && options?.method === 'POST') {
+        savedContent = JSON.parse(String(options.body)).content
+        return new Response(JSON.stringify({ success: true, data: 97531 }), { status: 200 })
+      }
+      if (url.includes('/news/v4/article?newsId=97531')) return new Response(JSON.stringify({ code: 2000, success: true, data: { news: { id: 97531, title: '搜狐新码测试', content: savedContent } } }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({
+      title: '搜狐新码测试', html: '<p>正文保持一致</p>', markdown: '',
+    }, { draftOnly: true, draftAuthorization: sohuDraftAuthorization })
+    expect(result.success).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+  })
+
+  it('still rejects a Sohu failure code when returned data cannot verify this draft', async () => {
+    const adapter = new SohuAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.includes('/mpbp/bp/account/listV2')) return new Response(JSON.stringify({ code: 2000000, data: { data: [{ accountInfos: [{ id: '88', nickName: '验收号', avatar: '' }] }] } }), { status: 200 })
+      if (url.includes('/news/v4/news/draft/v2') && options?.method === 'POST') return new Response(JSON.stringify({ success: true, data: 86420 }), { status: 200 })
+      if (url.includes('/news/v4/article?newsId=86420')) return new Response(JSON.stringify({ code: 5001, success: false, msg: '读取失败', data: null }), { status: 200 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({ title: '搜狐失败码测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: sohuDraftAuthorization })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('读取失败')
+    expect(result.readBackVerified).not.toBe(true)
   })
 
   it('does not report success when the saved content cannot be read back', async () => {
@@ -459,6 +587,22 @@ describe('guarded Toutiao draft adapter', () => {
 })
 
 describe('guarded NetEase draft adapter', () => {
+  it('accepts NetEase paragraph splitting while keeping exact text and image character offsets', () => {
+    const source = parseCanonicalArticle('<h2>小节</h2><p>第一段</p><img src="a.jpg" alt="图注"><p>第二段</p>', '网易测试')
+    const readBack = '<p>小节<br>第一段</p><p><img src="https://cms-bucket.ws.126.net/a.jpg" alt="图注"><br>图注</p><p>第二段</p>'
+    const report = validateNeteaseFidelity(source, readBack, '网易测试')
+    expect(report.fidelityVerified).toBe(true)
+    expect(report.checks.find((item) => item.key === 'main-block-order')?.status).toBe('PASS')
+    expect(report.checks.find((item) => item.key === 'image-anchor')?.status).toBe('PASS')
+  })
+
+  it('still rejects a NetEase draft when an image moves across actual正文 text', () => {
+    const source = parseCanonicalArticle('<p>第一段</p><img src="a.jpg" alt="图注"><p>第二段</p>', '网易测试')
+    const moved = '<p>第一段第二段</p><p><img src="https://cms-bucket.ws.126.net/a.jpg" alt="图注"><br>图注</p>'
+    const report = validateNeteaseFidelity(source, moved, '网易测试')
+    expect(report.fidelityVerified).toBe(false)
+    expect(report.checks.find((item) => item.key === 'image-anchor')?.status).toBe('FAIL')
+  })
   it('does not auto-check platforms whose login probe opens an editor tab', () => {
     expect(shouldAutoCheckPlatformAuth(new NeteaseAdapter().meta)).toBe(false)
     expect(shouldAutoCheckPlatformAuth(new XiaohongshuAdapter().meta)).toBe(false)
@@ -498,7 +642,7 @@ describe('guarded NetEase draft adapter', () => {
         }
         if (request.url.startsWith('/wemedia/article/editpage.do')) return {
           ok: true, status: 200,
-          text: JSON.stringify({ code: 1, data: { post: { docid: 'doc_13579', title: '网易测试', content: savedContent } } }),
+          text: JSON.stringify({ code: 1, data: { post: { docid: 'doc_13579', title: '网易测试', body: savedContent } } }),
         }
         return { ok: false, status: 404, text: '{}' }
       }),
@@ -523,6 +667,45 @@ describe('guarded NetEase draft adapter', () => {
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
   })
 
+  it('retries only NetEase draft readback when newly saved content is not ready yet', async () => {
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    let saveAttempts = 0
+    let readAttempts = 0
+    let savedContent = ''
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.guardian) return { ok: true, status: 200, text: JSON.stringify({ code: 200, token: 'official-guardian-token' }) }
+        if (request.url === '/wemedia/navinfo.do') return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { wemediaId: 'media88' } }) }
+        if (request.url === '/wemedia/article/status/api/publishV2.do') {
+          saveAttempts += 1
+          savedContent = request.form.content
+          return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: 'docId=doc_delayed' }) }
+        }
+        if (request.url.startsWith('/wemedia/article/editpage.do')) {
+          readAttempts += 1
+          return readAttempts < 3
+            ? { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { post: { docid: 'doc_delayed', title: '延迟回读', body: '' } } }) }
+            : { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { post: { docid: 'doc_delayed', title: '延迟回读', body: savedContent } } }) }
+        }
+        return { ok: false, status: 404, text: '{}' }
+      }),
+    }
+    await adapter.init(runtime)
+    vi.spyOn(adapter as any, 'delay').mockResolvedValue(undefined)
+
+    const result = await adapter.saveDraft({
+      title: '延迟回读', html: '<p>正文</p>', markdown: '',
+    }, { draftOnly: true, draftAuthorization: neteaseDraftAuthorization })
+
+    expect(result.success).toBe(true)
+    expect(result.readBackVerified).toBe(true)
+    expect(saveAttempts).toBe(1)
+    expect(readAttempts).toBe(3)
+  })
+
   it('fails closed with a useful message when the page script returns no result', async () => {
     const adapter = new NeteaseAdapter()
     const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
@@ -536,6 +719,64 @@ describe('guarded NetEase draft adapter', () => {
 
     expect(auth.isAuthenticated).toBe(false)
     expect(auth.error).toContain('网易号页面未返回登录检查结果')
+  })
+
+  it('retries transient HTTP 0 image upload interruptions before failing the draft', async () => {
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    let attempts = 0
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        if (!args[0].imageSource) throw new Error('only image upload is expected')
+        attempts += 1
+        if (attempts < 3) return { ok: false, status: 0, text: JSON.stringify({ error: 'network-error' }) }
+        return { ok: true, status: 200, text: JSON.stringify({ code: 1, data: { url: '//dingyue.ws.126.net/retried.jpg' } }) }
+      }),
+    }
+    await adapter.init(runtime)
+
+    const result = await (adapter as any).uploadImageByUrl('data:image/png;base64,iVBORw==')
+
+    expect(result.url).toBe('https://dingyue.ws.126.net/retried.jpg')
+    expect(attempts).toBe(3)
+    expect(runtime.tabs.waitForLoad).toHaveBeenCalledTimes(2)
+  })
+
+  it('normalizes current NetEase upload response variants to trusted HTTPS CDN URLs', async () => {
+    const variants = [
+      { code: 200, data: 'http://dingyue.ws.126.net/string-result.jpg' },
+      { code: 1, data: { imageUrl: 'http://cms-bucket.ws.126.net/image-url.jpg' } },
+      { data: { result: { src: '//dingyue.ws.126.net/nested-src.jpg' } } },
+      { url: 'https://dingyue.ws.126.net/root-url.jpg' },
+    ]
+    const expected = [
+      'https://dingyue.ws.126.net/string-result.jpg',
+      'https://cms-bucket.ws.126.net/image-url.jpg',
+      'https://dingyue.ws.126.net/nested-src.jpg',
+      'https://dingyue.ws.126.net/root-url.jpg',
+    ]
+    for (let index = 0; index < variants.length; index += 1) {
+      const adapter = new NeteaseAdapter()
+      const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+      runtime.tabs = {
+        query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
+        executeScript: vi.fn(async () => ({ ok: true, status: 200, text: JSON.stringify(variants[index]) })),
+      }
+      await adapter.init(runtime)
+      await expect((adapter as any).uploadImageByUrl('data:image/png;base64,iVBORw==')).resolves.toEqual({ url: expected[index] })
+    }
+  })
+
+  it('still rejects non-NetEase upload URLs even when nested in a successful response', async () => {
+    const adapter = new NeteaseAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async () => ({ ok: true, status: 200, text: JSON.stringify({ code: 1, data: { result: { url: 'https://evil.example/image.jpg' } } }) })),
+    }
+    await adapter.init(runtime)
+    await expect((adapter as any).uploadImageByUrl('data:image/png;base64,iVBORw==')).rejects.toThrow('缺少受信任的 HTTPS 图片 URL')
   })
 
   it('stops before saving when the official guardian token is unavailable', async () => {

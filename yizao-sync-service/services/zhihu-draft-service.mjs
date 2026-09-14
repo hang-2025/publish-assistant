@@ -30,6 +30,16 @@ function assertSameSnapshot(task, current) {
   }
 }
 
+// 用户明确要求允许重复保存：仅当上一个任务仍在执行中时阻止（防双击连点）；
+// 终态任务（草稿已保存/已发布/失败/已取消）允许再次确认后创建新任务。
+function isPreviousInFlight(task) {
+  if (!task) return false;
+  return ![
+    TASK_STATUS.WAITING_CONFIRMATION, TASK_STATUS.PUBLISHED,
+    TASK_STATUS.FAILED, TASK_STATUS.CANCELLED,
+  ].includes(task.status);
+}
+
 function sanitizeFidelityReport(report) {
   if (!report || report.schema !== 'yizao-html-fidelity-report' || !report.summary || !Array.isArray(report.checks)) return null;
   const allowedStatuses = new Set(['PASS', 'DEGRADED', 'UNSUPPORTED', 'FAIL']);
@@ -91,7 +101,15 @@ export class ZhihuDraftService {
     const context = await this.loadSnapshot(packageId);
     const { snapshot } = context;
     if (!snapshot.gate.executable) return { started: false, reason: 'snapshot-blocked', gate: snapshot.gate };
-    const taskKey = makeTaskKey({ packageId, platform: 'zhihu', accountId: ACCOUNT_ID, contentVersion: snapshot.source.contentVersion });
+    const baseTaskKey = makeTaskKey({ packageId, platform: 'zhihu', accountId: ACCOUNT_ID, contentVersion: snapshot.source.contentVersion });
+    const related = (await this.store.listTasks()).filter((task) => (
+      task.taskKey === baseTaskKey || String(task.taskKey || '').startsWith(`${baseTaskKey}:retry:`)
+    ));
+    const previous = related.at(-1) || null;
+    if (previous && isPreviousInFlight(previous)) {
+      return { started: false, reason: 'exists', task: previous };
+    }
+    const taskKey = previous ? `${baseTaskKey}:retry:${related.length + 1}` : baseTaskKey;
     const created = await this.store.createTask({
       taskKey, packageId, rootName: context.rootName, relativePath: context.relativePath,
       platform: 'zhihu', platformName: '知乎', accountId: ACCOUNT_ID, accountLabel: '当前 Chrome 知乎会话',
@@ -99,6 +117,11 @@ export class ZhihuDraftService {
       segments: context.segments, snapshotId: snapshot.snapshotId, snapshot: snapshotRecord(snapshot), mode: 'zhihu-draft',
     });
     if (!created.created) return { started: false, reason: created.reason, task: created.task, busy: created.busy };
+    if (previous) {
+      created.task.retryOfTaskId = previous.taskId;
+      created.task.retryReason = '用户在当前操作中再次明确确认保存草稿；保留原任务审计记录后创建新任务';
+      await this.store.saveTask(created.task);
+    }
     await this.store.transitionStatus(created.task.taskId, TASK_STATUS.VALIDATING, '服务端复核发布包与不可变快照');
     const task = await this.store.transitionStatus(created.task.taskId, TASK_STATUS.READY, '快照已锁定，等待扩展检查当前知乎登录会话');
     return { started: true, task, gate: snapshot.gate };

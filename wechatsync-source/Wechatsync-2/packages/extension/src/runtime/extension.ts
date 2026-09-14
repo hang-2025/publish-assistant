@@ -210,6 +210,11 @@ export class ExtensionRuntime implements RuntimeInterface {
       return { id: tab.id! }
     },
 
+    async activate(tabId: number): Promise<void> {
+      const tab = await chrome.tabs.update(tabId, { active: true })
+      if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true })
+    },
+
     async waitForLoad(tabId: number, timeout = 30000): Promise<void> {
       return new Promise((resolve, reject) => {
         const timeoutId = setTimeout(() => {
