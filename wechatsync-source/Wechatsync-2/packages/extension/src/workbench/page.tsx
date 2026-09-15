@@ -557,6 +557,7 @@ export function Workbench() {
   const [openCap, setOpenCap] = useState<Capability | null>(null)
   const [tasks, setTasks] = useState<SimTask[]>([])
   const [serverTasks, setServerTasks] = useState<ServerTask[]>([])
+  const [endingTaskId, setEndingTaskId] = useState('')
   const [officialPreview, setOfficialPreview] = useState<OfficialPreview | null>(null)
   const [officialBusy, setOfficialBusy] = useState<'prepare' | 'simulate' | ''>('')
   const [officialNote, setOfficialNote] = useState('')
@@ -575,6 +576,7 @@ export function Workbench() {
   // 按文章包记录保存进度：不同平台/文章可同时保存，同一篇文章防重复点击。
   const [guardedDraftBusyIds, setGuardedDraftBusyIds] = useState<string[]>([])
   const [guardedDraftAbortedIds, setGuardedDraftAbortedIds] = useState<string[]>([])
+  const [guardedDraftOkIds, setGuardedDraftOkIds] = useState<string[]>([])
   const [guardedDraftNotes, setGuardedDraftNotes] = useState<Record<string, string>>({})
   const guardedDraftAbortRef = useRef<Set<string>>(new Set())
   const guardedDraftTaskRef = useRef<Map<string, { fail: string; taskId: string }>>(new Map())
@@ -1071,6 +1073,7 @@ export function Workbench() {
 
   async function saveGuardedDraft() {
     if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu'].includes(openCap.platform.id)) return
+    if (packageBusy(detail.packageId)) return // 双击/重复触发兜底；服务端另有幂等保护
     const platform = openCap.platform as { id: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu'; name: string }
     const commandsByPlatform = {
       zhihu: { prepare: 'prepareZhihuDraft', begin: 'beginZhihuDraft', fail: 'failZhihuDraft', message: 'YIZAO_ZHIHU_DRAFT' },
@@ -1157,6 +1160,7 @@ export function Workbench() {
       const draftUrl = String(result.postUrl || '')
       let opened = false
       try { await openPlatformTab(platform.id, draftUrl); opened = true } catch { /* draft remains saved and auditable */ }
+      setGuardedDraftOkIds((prev) => [...new Set([...prev, pkgId])])
       setPackageNote(pkgId, opened
         ? `${platform.name}草稿已保存并已打开；请在平台页面检查后手动发布。`
         : `${platform.name}草稿已保存，但未能自动打开平台；可在任务中心打开草稿。`)
@@ -1167,6 +1171,7 @@ export function Workbench() {
         ? '已手动中止保存；已创建的平台任务已标记失败。若页面填写已开始，是否写入草稿以平台草稿箱为准。'
         : errMessage(e)
       if (taskId) await call(commands.fail, { taskId, error: message }).catch(() => {})
+      setGuardedDraftOkIds((prev) => prev.filter((id) => id !== pkgId))
       setPackageNote(pkgId, message.includes(platform.name) || message.includes('已手动中止') ? message : `【${platform.name}】${message}`)
       await reloadServerTasks()
     } finally {
@@ -1258,6 +1263,30 @@ export function Workbench() {
     } catch (e) { setError(errMessage(e)) }
   }
 
+  async function endStuckDraftTask(task: ServerTask) {
+    if (endingTaskId || task.runState !== 'active') return
+    const failCommands: Record<string, string> = {
+      'zhihu-draft': 'failZhihuDraft',
+      'sohu-draft': 'failSohuDraft',
+      'toutiao-draft': 'failToutiaoDraft',
+      'netease-draft': 'failNeteaseDraft',
+      'xiaohongshu-draft': 'failXiaohongshuDraft',
+    }
+    const command = failCommands[task.mode]
+    if (!command) return
+    const confirmed = window.confirm(`确定结束《${task.title}》的卡住任务吗？\n\n结束后会释放${task.platformName || task.platform}账号锁，但不会撤销平台页面中可能已经保存的草稿。请先检查平台草稿箱。`)
+    if (!confirmed) return
+    setError(''); setEndingTaskId(task.taskId)
+    try {
+      await call(command, { taskId: task.taskId, error: '用户在任务中心手动结束卡住任务；是否已保存请以平台草稿箱为准' })
+      await reloadServerTasks()
+    } catch (e) {
+      setError(errMessage(e))
+    } finally {
+      setEndingTaskId('')
+    }
+  }
+
   async function runRealActionGateCheck() {
     setError(''); setGateBusy(true)
     try {
@@ -1289,6 +1318,26 @@ export function Workbench() {
     // saveGuardedDraft 读取的 detail/openCap/preview 已在本轮匹配完成。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quickDraftRequest, detail, preview, openCap, guardedDraftBusyIds])
+
+  // 测试入口：打开 workbench?autodraft=<packageId> 等价于人工点击该文章卡片
+  // （自动扫描 → 自动触发受保护保存流程），用于全平台回归验证。
+  const autoDraftTargetRef = useRef(new URLSearchParams(location.search).get('autodraft') || '')
+  const autoDraftScanStartedRef = useRef(false)
+  useEffect(() => {
+    const target = autoDraftTargetRef.current
+    if (!target || packageBusy(target)) return
+    const pkg = (scans.unpublished || []).find((item) => item.packageId === target)
+    if (!pkg) {
+      if (!autoDraftScanStartedRef.current && !scanning) {
+        autoDraftScanStartedRef.current = true
+        void scan('unpublished')
+      }
+      return
+    }
+    autoDraftTargetRef.current = ''
+    void startQuickGuardedDraft(pkg)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scans.unpublished, scanning])
 
   return <main>
     <header>
@@ -1427,8 +1476,8 @@ export function Workbench() {
           const quickNote = guardedDraftNotes[quickDraftPackageId] || ''
           const quickBusy = packageBusy(quickDraftPackageId)
           const quickAborted = packageAborted(quickDraftPackageId)
-          return <div className={`quick-draft-status${quickNote && !quickNote.includes('已保存') ? ' error' : ''}`}>
-            <strong>{quickBusy ? (quickAborted ? '已请求中止，正在等待页面流程返回…' : '正在自动检查并保存草稿…') : (quickDraftRequest ? '正在自动检查并保存草稿…' : (quickNote.includes('已保存') ? '草稿已保存，平台页面已打开' : '本次操作需要处理'))}</strong>
+          return <div className={`quick-draft-status${quickNote && !guardedDraftOkIds.includes(quickDraftPackageId) ? ' error' : ''}`}>
+            <strong>{quickBusy ? (quickAborted ? '已请求中止，正在等待页面流程返回…' : '正在自动检查并保存草稿…') : (quickDraftRequest ? '正在自动检查并保存草稿…' : (guardedDraftOkIds.includes(quickDraftPackageId) ? '草稿已保存，平台页面已打开' : '本次操作需要处理'))}</strong>
             {quickNote && <span>{quickNote}</span>}
             {quickBusy && !quickAborted && <button type="button" className="secondary" onClick={() => abortGuardedDraft(quickDraftPackageId)}>中止保存</button>}
           </div>
@@ -1453,14 +1502,15 @@ export function Workbench() {
                 const disabled = cap?.kind === 'not-ready'
                 const pkgNote = guardedDraftNotes[pkg.packageId || ''] || ''
                 const busyThis = packageBusy(pkg.packageId)
+                const okThis = Boolean(pkg.packageId && guardedDraftOkIds.includes(pkg.packageId))
                 const isQuickDraft = quickDraftPackageId === pkg.packageId
-                const quickDraftFailed = Boolean(isQuickDraft && pkgNote && !pkgNote.includes('已保存'))
+                const quickDraftFailed = Boolean(isQuickDraft && pkgNote && !okThis)
                 const actionLabel = archivedPackage ? '查看已归档详情' : (busyThis
                   ? (packageAborted(pkg.packageId) ? '中止中…' : '中止保存')
                   : (isQuickDraft
                     ? (quickDraftRequest
                       ? '正在检查并保存…'
-                      : (pkgNote.includes('已保存') ? '已保存并打开平台' : (quickDraftFailed ? '保存失败，点击重试' : cap!.label)))
+                      : (okThis ? '已保存并打开平台' : (quickDraftFailed ? '保存失败，点击重试' : cap!.label)))
                     : cap!.label))
                 return <div key={pkg.packageId} className="pkg-wrap">
                 <button className="pkg" data-cap={archivedPackage ? 'archived' : cap!.kind} disabled={disabled || packageAborted(pkg.packageId)} title={disabled ? cap!.explain : (busyThis && !packageAborted(pkg.packageId) ? '点击中止本次保存' : undefined)} onClick={() => busyThis ? abortGuardedDraft(pkg.packageId!) : (cap?.kind === 'guarded-draft' ? startQuickGuardedDraft(pkg) : openPackage(pkg))}>
@@ -1657,12 +1707,12 @@ export function Workbench() {
             <div className="row">
               {detailBusy
                 ? <button className="secondary" disabled={packageAborted(detail?.packageId)} onClick={() => detail?.packageId && abortGuardedDraft(detail.packageId)}>{packageAborted(detail?.packageId) ? '已中止，等待页面流程返回…' : '中止保存'}</button>
-                : <button onClick={saveGuardedDraft} disabled={!compatibility.ok || acceptanceBusy}>{`保存草稿并打开${openCap.platform?.name}`}</button>}
+                : <button onClick={saveGuardedDraft} disabled={!compatibility.ok}>{`保存草稿并打开${openCap.platform?.name}`}</button>}
               {showAcceptanceDetails && <button className="secondary" onClick={runAcceptanceCheck} disabled={acceptanceBusy || detailBusy}>{acceptanceBusy ? '正在重新检查…' : '重新检查'}</button>}
               {showAcceptanceDetails && <button className="secondary" onClick={runDraftSimulation}>仅运行模拟</button>}
               {showAcceptanceDetails && <button className="secondary" onClick={generateChecklist} disabled={checklistBusy}>{checklistBusy ? '正在生成…' : '生成验收材料（只读）'}</button>}
             </div>
-            {detailNote && <p className={detailNote.includes('已保存') ? 'ok' : 'warn'}>{detailNote}</p>}
+            {detailNote && <p className={detail?.packageId && guardedDraftOkIds.includes(detail.packageId) ? 'ok' : 'warn'}>{detailNote}</p>}
           </>
           })()}
 
@@ -1800,6 +1850,7 @@ export function Workbench() {
             <small>{t.accountLabel || t.accountId}</small>
             <small className="mono">内容版本 {t.contentVersionShort}</small>
             {t.mode === 'simulate' && <button className="danger" onClick={() => removeServerTask(t.taskId)}>删除</button>}
+            {['zhihu-draft', 'sohu-draft', 'toutiao-draft', 'netease-draft', 'xiaohongshu-draft'].includes(t.mode) && t.runState === 'active' && <button className="danger" onClick={() => endStuckDraftTask(t)} disabled={Boolean(endingTaskId)}>{endingTaskId === t.taskId ? '正在结束…' : '结束卡住任务'}</button>}
           </div>
           <div className="task-meta">任务键 <code>{t.taskKey}</code> · 发送快照 {t.snapshotId} · 创建 {fmtTime(t.createdAt)}</div>
           <div className="task-steps">{taskSteps({ draft: t.draft.stage || '未执行', publish: t.publish?.status || '未发布', excel: t.excel?.status || '未登记', archive: t.archive?.status || '未归档' }).map((step) => <div className="task-step" data-state={step.state} key={step.key}>

@@ -14,15 +14,66 @@ import {
 
 const logger = createLogger('Sohu')
 
+const compactSohuText = (value: string) => String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
+
 /**
- * 搜狐编辑器对 figure/figcaption 的布局不稳定，可能把后续正文排到图片右侧。
- * 使用其稳定保留的段落图片结构，并用 br 将可见图注留在同一图片块中；
- * canonical 回读会把这一结构仍识别为一张图片及其 ALT 图注。
+ * 搜狐编辑器保存后会合并/拆分段落，图片前的正文块数不稳定。
+ * 每张图片前累计正文字符位置才是稳定语义；图片数、顺序与图注仍沿用
+ * canonical 的严格校验。
  */
-function normalizeSohuImageLayout(content: string): string {
+function validateSohuFidelity(source: ReturnType<typeof parseCanonicalArticle>, readBackHtml: string, readBackTitle: string): ReturnType<typeof validateCanonicalFidelity> {
+  const report = validateCanonicalFidelity(source, readBackHtml, readBackTitle)
+  const actual = parseCanonicalArticle(readBackHtml, readBackTitle)
+  const imageOffsets = (article: ReturnType<typeof parseCanonicalArticle>) => {
+    let offset = 0
+    const result: number[] = []
+    for (const block of article.blocks) {
+      if (block.kind === 'image') result.push(offset)
+      else if (block.kind !== 'divider' && 'text' in block) offset += compactSohuText(block.text).length
+    }
+    return result
+  }
+  const check = report.checks.find((item) => item.key === 'image-anchor')
+  const sourceOffsets = imageOffsets(source)
+  const actualOffsets = imageOffsets(actual)
+  if (check) {
+    const ok = JSON.stringify(sourceOffsets) === JSON.stringify(actualOffsets)
+    check.status = ok ? 'PASS' : 'FAIL'
+    check.detail = ok
+      ? '按每张图片前累计正文字符位置核对；允许搜狐合并或拆分段落'
+      : `图片锚点不一致；锚点 源=${JSON.stringify(sourceOffsets)} 回读=${JSON.stringify(actualOffsets)}`
+  }
+  report.summary = { pass: 0, degraded: 0, unsupported: 0, fail: 0 }
+  for (const item of report.checks) report.summary[item.status.toLowerCase() as keyof typeof report.summary]++
+  report.fidelityVerified = report.checks.every((item) => !item.required || item.status === 'PASS')
+  report.overall = report.fidelityVerified ? (report.summary.degraded ? 'DEGRADED' : 'PASS') : 'FAIL'
+  return report
+}
+
+/**
+ * 搜狐编辑器顶部标题栏由接口的 title 字段承担；正文里再放一个相同文字的
+ * 大标题会在文章页显示两遍。这里在保存与校验两侧对称地移除该重复标题块。
+ */
+function stripDuplicateTitleBlock(article: ReturnType<typeof parseCanonicalArticle>, title: string): void {
+  const first = article.blocks[0]
+  if (!first || first.kind !== 'heading') return
+  const drop = (value: string) => value.replace(/[？?！!。:：\s]+$/g, '')
+  if (drop(first.text) === drop(title) || drop(title).startsWith(drop(first.text))) article.blocks.shift()
+}
+
+/**
+ * 搜狐编辑器（Quill 定制版）的图片描述是其自有序列化结构：
+ * `<p><img ...><span class="img-desc" style="font-size: 16px;">描述</span></img></p>`
+ * （从该账号已发布文章的原生内容中提取）。编辑器按 class="img-desc" 把
+ * 文字填进图片下方描述框；不带该 class 的任何写法都只会降级成普通段落。
+ */
+function withSohuNativeImageCaptions(content: string): string {
   return content.replace(
     /<figure>\s*(<img\b[^>]*?)>\s*<figcaption>([\s\S]*?)<\/figcaption>\s*<\/figure>/gi,
-    '<p style="clear:both;text-align:center;margin:20px 0;">$1 style="display:block;float:none;max-width:100%;height:auto;margin:0 auto;"><br><span style="display:block;margin-top:8px;line-height:1.7;">$2</span></p>',
+    (_match, imgTag: string, caption: string) => {
+      const inner = imgTag.replace(/\sstyle="[^"]*"/i, '').replace(/\/>$/, '>').trimEnd()
+      return `<p style="text-align:center;">${inner}><span class="img-desc" style="font-size: 16px;">${caption}</span></img></p>`
+    },
   )
 }
 
@@ -116,7 +167,11 @@ export class SohuAdapter extends CodeAdapter {
         }
       )
 
-      const res = await response.json() as {
+      // 搜狐子账号 ID 可能超过 JS 安全整数范围；response.json() 会把它静默
+      // 舍入成错误值，随后保存接口报「账号不存在」。先取文本，把 15 位以上
+      // 的数字 id 字面量保真为字符串再解析。
+      const rawText = await response.text()
+      const res = JSON.parse(rawText.replace(/("(?:id|accountId)"\s*:\s*)(\d{15,})/g, '$1"$2"')) as {
         code: number
         data?: {
           data?: Array<{
@@ -220,7 +275,8 @@ export class SohuAdapter extends CodeAdapter {
       const canonical = parseCanonicalArticle(article.html || '', article.title)
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
-      let content = normalizeSohuImageLayout(renderCanonicalArticle(canonical))
+      stripDuplicateTitleBlock(canonical, article.title)
+      let content = withSohuNativeImageCaptions(renderCanonicalArticle(canonical))
 
       // Process images
       await options?.onDraftStage?.('uploading')
@@ -293,13 +349,18 @@ export class SohuAdapter extends CodeAdapter {
       const postId = String(rawPostId || '')
       const saveCodeAccepted = res.success === true || [1, 100, 200, 2000, 2000000].includes(Number(res.code))
       if (!saveCodeAccepted) {
-        throw new Error(res.msg || '保存失败')
+        // 附上本次使用的子账号与原始响应（截断），区分「ID 精度/子账号选错」
+        // 与平台误报——实测该报错出现时草稿可能已实际写入草稿箱。
+        const account = this.accountInfo!
+        const rawSnippet = JSON.stringify(res).slice(0, 200)
+        throw new Error(`${res.msg || '保存失败'}（子账号：${account.nickName}，ID 尾号 ${String(account.id).slice(-6)}；响应：${rawSnippet}）。搜狐接口如此返回时草稿可能已保存，请先到搜狐号后台草稿箱核对，避免重复保存。`)
       }
       if (!/^[0-9]+$/.test(postId)) throw new Error('搜狐保存草稿响应缺少有效草稿 ID')
 
       // 保存后必须从搜狐草稿详情接口回读；仅收到 ID 不算成功。
+      // 回读同样带上本次子账号 ID，保持与保存请求一致的账号上下文。
       const readBackResponse = await this.runtime.fetch(
-        `https://mp.sohu.com/mpbp/bp/news/v4/article?newsId=${postId}`,
+        `https://mp.sohu.com/mpbp/bp/news/v4/article?newsId=${postId}&accountId=${this.accountInfo!.id}`,
         {
           method: 'GET',
           credentials: 'include',
@@ -324,14 +385,20 @@ export class SohuAdapter extends CodeAdapter {
       // 因而无需依赖易变的业务成功码，也不会把失败包误判为成功。
       if (!readBackMatches && (readBackEnvelope.success === false
         || (readBackEnvelope.code !== undefined && ![2000, 2000000].includes(readBackEnvelope.code)))) {
-        throw new Error(readBackEnvelope.msg || `搜狐草稿回读接口返回失败（code ${readBackEnvelope.code ?? 'unknown'}）`)
+        const rawSnippet = JSON.stringify(readBackEnvelope).slice(0, 200)
+        throw new Error(`${readBackEnvelope.msg || `搜狐草稿回读接口返回失败（code ${readBackEnvelope.code ?? 'unknown'}）`}（子账号：${this.accountInfo!.nickName}；响应：${rawSnippet}）。注意：保存接口已接受，草稿可能已在草稿箱中，请先人工核对。`)
       }
       if (!readBackMatches) {
         throw new Error('搜狐草稿回读内容与本次保存不一致')
       }
 
       const draftUrl = `https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?spm=smmp.articlelist.0.0&contentStatus=2&id=${postId}`
-      const fidelityReport = validateCanonicalFidelity(canonical, String(readBack.content || ''), String(readBack.title || ''))
+      // 保存时正文已去掉与标题重复的首块；校验两侧对称处理后再比对。
+      const sourceForCheck = parseCanonicalArticle(article.html || '', article.title)
+      stripDuplicateTitleBlock(sourceForCheck, article.title)
+      const readBackForCheck = parseCanonicalArticle(String(readBack.content || ''), String(readBack.title || ''))
+      stripDuplicateTitleBlock(readBackForCheck, String(readBack.title || ''))
+      const fidelityReport = validateSohuFidelity(sourceForCheck, renderCanonicalArticle(readBackForCheck), String(readBack.title || ''))
       fidelityReport.checks.push(
         { key: 'trusted-draft-url', status: 'PASS', required: true, detail: '搜狐号 HTTPS 编辑草稿 URL' },
         { key: 'draft-only', status: 'PASS', required: true, detail: '仅调用保存草稿接口，未调用公开发布' },
@@ -348,7 +415,8 @@ export class SohuAdapter extends CodeAdapter {
         fidelityReport,
       })
     }).catch((error) => this.createResult(false, {
-      error: (error as Error).message,
+      // 附带抛出点堆栈，用于定位“账号不存在”这类裸平台错误的来源。
+      error: `${(error as Error).message}【at ${(error as Error).stack?.split('\n').slice(1, 3).map((line) => line.trim().slice(0, 100)).join(' <= ') || 'unknown'}】`,
     }))
   }
 

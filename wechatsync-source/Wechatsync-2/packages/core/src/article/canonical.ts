@@ -93,6 +93,12 @@ export function parseCanonicalArticle(html: string, title = ''): CanonicalArticl
       for (const img of Array.from(element.querySelectorAll(':scope > img'))) pushImage(img)
       return
     }
+    // 搜狐编辑器（Quill 定制）的图片描述是 p > img + span.img-desc。
+    // 同样整体视为一个图片块，img-desc 的可见文字不重复计入正文。
+    if (tag === 'p' && element.querySelector(':scope > img') && element.querySelector(':scope > .img-desc')) {
+      for (const img of Array.from(element.querySelectorAll(':scope > img'))) pushImage(img)
+      return
+    }
     if (/^h[1-6]$/.test(tag)) {
       blocks.push({ kind: 'heading', level: Math.min(3, Number(tag[1])) as 1 | 2 | 3, text: normalize(element.textContent || ''), html: semanticHtml(element) }); anchor++; return
     }
@@ -146,6 +152,30 @@ export function renderCanonicalArticle(article: CanonicalArticle): string {
     if (block.kind === 'divider') return '<hr>'
     return `<figure><img src="${escapeAttr(block.source)}" alt="${escapeAttr(block.alt)}"><figcaption>${escapeAttr(block.captionCandidate)}</figcaption></figure>`
   }).join('')
+}
+
+/**
+ * Remove visual divider blocks for platforms whose editor renders package
+ * separators as prominent horizontal rules. Image anchors are recalculated so
+ * the platform-normalized article can still be verified after read-back.
+ */
+export function withoutCanonicalDividers(article: CanonicalArticle): CanonicalArticle {
+  let anchor = 0
+  let imageOrder = 0
+  const blocks: CanonicalBlock[] = []
+
+  for (const block of article.blocks) {
+    if (block.kind === 'divider') continue
+    if (block.kind === 'image') {
+      blocks.push({ ...block, order: ++imageOrder, anchor })
+      continue
+    }
+    blocks.push(block)
+    anchor++
+  }
+
+  const images = blocks.filter((block): block is Extract<CanonicalBlock, { kind: 'image' }> => block.kind === 'image')
+  return { ...article, blocks, images }
 }
 
 function sequence(article: CanonicalArticle) {

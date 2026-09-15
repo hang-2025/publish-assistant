@@ -435,12 +435,13 @@ export class XiaohongshuAdapter extends CodeAdapter {
             }
           }
           const sameTitle = lastDrafts.find((draft) => draft.title === normalizeText(input.title))
+          const brief = (value: unknown) => JSON.stringify(value).slice(0, 80)
           const mismatch = sameTitle
             ? `（回读图片 ${sameTitle.imageCount}/${input.images.length}；${[
               comparableText(sameTitle.body) !== comparableText(input.body) ? '正文' : '',
               JSON.stringify(sameTitle.imageCaptions) !== JSON.stringify(expectedCaptions) ? '图注顺序' : '',
               JSON.stringify(sameTitle.imageAnchors) !== JSON.stringify(expectedAnchors) ? '图片位置' : '',
-            ].filter(Boolean).join('、') || '草稿内容'}仍有差异）`
+            ].filter(Boolean).join('、') || '草稿内容'}仍有差异；图注 期=${brief(expectedCaptions)} 回=${brief(sameTitle.imageCaptions)}；锚点 期=${brief(expectedAnchors)} 回=${brief(sameTitle.imageAnchors)}）`
             : '（未找到同标题长文）'
           return { ok: false, error: `小红书页面执行了暂存，但未能从 article-draft 回读完全匹配的长文${mismatch}` }
         } catch (error) { return { ok: false, error: String((error as Error)?.message || error) } }

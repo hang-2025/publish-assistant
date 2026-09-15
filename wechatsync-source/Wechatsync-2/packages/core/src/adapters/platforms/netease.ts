@@ -105,6 +105,15 @@ function uploadedImageCandidates(envelope: any): string[] {
 
 const compactNeteaseText = (value: string) => String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
 
+/** 定位两段压缩正文的第一个字符差异，用于失败时诊断平台改写位置。 */
+function firstTextDivergence(source: string, actual: string): string {
+  const limit = Math.min(source.length, actual.length)
+  let index = 0
+  while (index < limit && source[index] === actual[index]) index += 1
+  const around = (value: string) => JSON.stringify(value.slice(Math.max(0, index - 10), index + 30))
+  return `首个差异@${index}（长度 源${source.length}/回读${actual.length}）：源${around(source)} 回读${around(actual)}`
+}
+
 /**
  * 网易会把相邻标题/段落拆分或合并，HTML 块数并不稳定。正文字符顺序和
  * 每张图片前的累计正文字符位置才是稳定语义；图片数、顺序和图注仍沿用
@@ -130,8 +139,16 @@ export function validateNeteaseFidelity(source: CanonicalArticle, readBackHtml: 
     const check = report.checks.find((item) => item.key === key)
     if (check) { check.status = ok ? 'PASS' : 'FAIL'; check.detail = detail }
   }
-  replace('main-block-order', text(source) === text(actual), '正文文字与顺序一致；允许网易合并或拆分 HTML 段落')
-  replace('image-anchor', JSON.stringify(imageOffsets(source)) === JSON.stringify(imageOffsets(actual)), '按每张图片前累计正文字符位置核对；不依赖网易重排后的段落数量')
+  const sourceText = text(source)
+  const actualText = text(actual)
+  const sourceOffsets = imageOffsets(source)
+  const actualOffsets = imageOffsets(actual)
+  replace('main-block-order', sourceText === actualText,
+    sourceText === actualText ? '正文文字与顺序一致；允许网易合并或拆分 HTML 段落' : `正文文字存在差异；${firstTextDivergence(sourceText, actualText)}`)
+  replace('image-anchor', JSON.stringify(sourceOffsets) === JSON.stringify(actualOffsets),
+    JSON.stringify(sourceOffsets) === JSON.stringify(actualOffsets)
+      ? '按每张图片前累计正文字符位置核对；不依赖网易重排后的段落数量'
+      : `图片锚点不一致；锚点 源=${JSON.stringify(sourceOffsets)} 回读=${JSON.stringify(actualOffsets)}`)
   report.summary = { pass: 0, degraded: 0, unsupported: 0, fail: 0 }
   for (const check of report.checks) report.summary[check.status.toLowerCase() as keyof typeof report.summary]++
   report.fidelityVerified = report.checks.every((check) => !check.required || check.status === 'PASS')

@@ -208,15 +208,17 @@ async function runGuardedDraftInner(
       draftAuthorization: { action: 'saveDraft', platform, taskId, snapshotId },
     })
     if (!result.success || !result.draftOnly || !result.readBackVerified || !result.fidelityVerified) {
-      const error = result.error || `${config.name}草稿已保存但 HTML 内容保真校验失败，不能标记已验收；请人工检查草稿且不要重复点击`
+      const error = `${result.error || `${config.name}草稿已保存但 HTML 内容保真校验失败，不能标记已验收；请人工检查草稿且不要重复点击`}【adapter-return】`
       await callLocalService(config.fail, { taskId, error, fidelityReport: result.fidelityReport }).catch(() => {})
       return { error, result }
     }
     await callLocalService(config.complete, { taskId, result })
     return { result }
   } catch (error) {
-    await callLocalService(config.fail, { taskId, error: (error as Error).message }).catch(() => {})
-    return { error: (error as Error).message }
+    // 带上抛出点堆栈，定位绕过适配器包装的裸平台错误（如 checkAuth 透传）。
+    const message = `${(error as Error).message}【bg:${(error as Error).stack?.split('\n')[1]?.trim().slice(0, 130) || 'no-stack'}】`
+    await callLocalService(config.fail, { taskId, error: message }).catch(() => {})
+    return { error: message }
   }
 }
 

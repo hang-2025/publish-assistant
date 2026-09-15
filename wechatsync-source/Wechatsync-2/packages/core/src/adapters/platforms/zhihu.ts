@@ -11,6 +11,7 @@ import {
   parseCanonicalArticle,
   renderCanonicalArticle,
   validateCanonicalFidelity,
+  withoutCanonicalDividers,
 } from '../../article/canonical'
 
 const logger = createLogger('Zhihu')
@@ -115,7 +116,9 @@ export class ZhihuAdapter extends CodeAdapter {
 
       // The publishing-package HTML is the canonical source. Do not fall back to
       // Markdown/Word or couple the platform adapter to arbitrary source DOM.
-      const canonical = parseCanonicalArticle(article.html || '', article.title)
+      // 发布包中的 <hr> 是版面分段标记。知乎会把它渲染成明显横线，
+      // 因此在知乎平台模型中去除，并同步重算图片锚点供回读校验。
+      const canonical = withoutCanonicalDividers(parseCanonicalArticle(article.html || '', article.title))
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
 
