@@ -64,7 +64,12 @@ export class DoubanAdapter extends CodeAdapter {
   private async notePageRun<T, A extends unknown[]>(fn: (...args: A) => T, args: A): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tabId = await this.ensureNoteTab()
-      try { return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args) } catch (error) {
+      try {
+        // 豆瓣编辑器在后台标签页会被 Chrome 降频，尤其是上传完图片后紧接着发起草稿请求。
+        // 激活是幂等的，只唤醒已经找到的编辑器标签页，不创建新页面，也不触碰用户数据。
+        await Promise.resolve(this.runtime.tabs!.activate?.(tabId)).catch(() => {})
+        return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args)
+      } catch (error) {
         const message = String((error as Error)?.message || '')
         if (attempt === 0 && (message.includes('No tab with id') || message.includes('cannot be edited') || message.includes('Frame with ID'))) {
           this.noteTabId = null
