@@ -28,6 +28,52 @@ interface DoubanDraftProps {
   image_layout?: 'vertical'
 }
 
+function escapeDoubanHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * 豆瓣 Draft.js 回读会把图片与它的可见说明拆成两个相邻 block：
+ * atomic(IMAGE) + unstyled(caption)。还原为 HTML 时必须重新合并成 figure，
+ * 否则通用校验器会把 caption 错当正文，导致正文长度、图片锚点和图注全部误报。
+ */
+export function doubanDraftJsonToHtml(raw: unknown): string {
+  try {
+    const state = (typeof raw === 'string' ? JSON.parse(raw) : raw) as { blocks?: Array<{ type?: string; text?: string; entityRanges?: Array<{ key: number }> }>; entityMap?: Record<string, any> }
+    if (!state || !Array.isArray(state.blocks)) return typeof raw === 'string' ? raw : ''
+    const html: string[] = []
+    for (let index = 0; index < state.blocks.length; index++) {
+      const block = state.blocks[index]
+      const text = String(block.text || '').trim()
+      const range = (block.entityRanges || [])[0]
+      const entity = range ? (state.entityMap?.[String(range.key)] ?? state.entityMap?.[range.key]) : null
+      if (entity?.type === 'IMAGE') {
+        const src = String(entity.data?.src || entity.data?.url || '')
+        const next = state.blocks[index + 1]
+        const entityCaption = String(entity.data?.description || entity.data?.caption || entity.data?.alt || '').trim()
+        const legacyCaption = next?.type === 'unstyled' ? String(next.text || '').trim() : ''
+        const caption = entityCaption || legacyCaption
+        if (src && caption) {
+          const escapedCaption = escapeDoubanHtml(caption)
+          html.push(`<figure><img src="${escapeDoubanHtml(src)}" alt="${escapedCaption}"><figcaption>${escapedCaption}</figcaption></figure>`)
+          if (!entityCaption && legacyCaption) index += 1
+        } else html.push(src ? `<p><img src="${escapeDoubanHtml(src)}"></p>` : '<p></p>')
+        continue
+      }
+      if (!text) continue
+      const escapedText = escapeDoubanHtml(text)
+      if (block.type === 'header-one') html.push(`<h1>${escapedText}</h1>`)
+      else if (block.type === 'header-two') html.push(`<h2>${escapedText}</h2>`)
+      else if (block.type === 'header-three') html.push(`<h3>${escapedText}</h3>`)
+      else if (block.type === 'blockquote') html.push(`<blockquote>${escapedText}</blockquote>`)
+      else if (block.type === 'ordered-list-item') html.push(`<ol><li>${escapedText}</li></ol>`)
+      else if (block.type === 'unordered-list-item') html.push(`<ul><li>${escapedText}</li></ul>`)
+      else html.push(`<p>${escapedText}</p>`)
+    }
+    return html.join('')
+  } catch { return typeof raw === 'string' ? raw : '' }
+}
+
 export class DoubanAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
     id: 'douban', name: '豆瓣', icon: 'https://www.douban.com/favicon.ico',
@@ -39,11 +85,18 @@ export class DoubanAdapter extends CodeAdapter {
   private avatar = ''
   private formData: DoubanFormData | null = null
   private noteTabId: number | null = null
-  private readonly HEADER_RULES = [{
-    urlFilter: '*://www.douban.com/*',
-    headers: { Origin: 'https://www.douban.com', Referer: 'https://www.douban.com' },
-    resourceTypes: ['xmlhttprequest'],
-  }]
+  private readonly HEADER_RULES = [
+    {
+      urlFilter: '*://www.douban.com/*',
+      headers: { Origin: 'https://www.douban.com', Referer: 'https://www.douban.com' },
+      resourceTypes: ['xmlhttprequest'],
+    },
+    {
+      urlFilter: '*://m.douban.com/*',
+      headers: { Origin: 'https://www.douban.com', Referer: 'https://www.douban.com/topic/create' },
+      resourceTypes: ['xmlhttprequest'],
+    },
+  ]
 
   private async ensureNoteTab(): Promise<number> {
     if (!this.runtime.tabs) throw new Error('当前运行环境不支持豆瓣页面安全请求')
@@ -61,18 +114,14 @@ export class DoubanAdapter extends CodeAdapter {
     return created.id
   }
 
-  private async notePageRun<T, A extends unknown[]>(
-    fn: (...args: A) => T,
-    args: A,
-    world: 'MAIN' | 'ISOLATED' = 'MAIN',
-  ): Promise<T> {
+  private async notePageRun<T, A extends unknown[]>(fn: (...args: A) => T, args: A): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tabId = await this.ensureNoteTab()
       try {
         // 豆瓣编辑器在后台标签页会被 Chrome 降频，尤其是上传完图片后紧接着发起草稿请求。
         // 激活是幂等的，只唤醒已经找到的编辑器标签页，不创建新页面，也不触碰用户数据。
         await Promise.resolve(this.runtime.tabs!.activate?.(tabId)).catch(() => {})
-        return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args, { world })
+        return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args)
       } catch (error) {
         const message = String((error as Error)?.message || '')
         if (attempt === 0 && (message.includes('No tab with id') || message.includes('cannot be edited') || message.includes('Frame with ID'))) {
@@ -120,9 +169,16 @@ export class DoubanAdapter extends CodeAdapter {
         const image = images.get(block.source)
         if (!image?.id) throw new Error(`图片尚未取得豆瓣媒体 ID：${block.source}`)
         const key = String(entityKey++)
-        entityMap[key] = { type: 'IMAGE', mutability: 'IMMUTABLE', data: { ...image, src: image.url, raw_src: image.url } }
+        entityMap[key] = {
+          type: 'IMAGE', mutability: 'IMMUTABLE',
+          data: {
+            ...image, src: image.url, raw_src: image.url,
+            // 豆瓣新版编辑器的图片卡片使用 description，而不是正文里的
+            // 独立段落。alt/caption 仅作为兼容字段和回读兜底。
+            description: block.alt, alt: block.alt, caption: block.alt,
+          },
+        }
         push({ type: 'atomic', text: ' ', entityRanges: [{ offset: 0, length: 1, key }] })
-        if (block.alt) push({ type: 'unstyled', text: block.alt })
       } else if (block.kind === 'divider') continue
       else if (block.kind === 'quote') push({ type: 'blockquote', text: block.text })
       else if (block.kind === 'list') {
@@ -140,24 +196,7 @@ export class DoubanAdapter extends CodeAdapter {
   }
 
   private draftJsonToHtml(raw: unknown): string {
-    try {
-      const state = (typeof raw === 'string' ? JSON.parse(raw) : raw) as { blocks?: Array<{ type?: string; text?: string; entityRanges?: Array<{ key: number }> }>; entityMap?: Record<string, any> }
-      if (!state || !Array.isArray(state.blocks)) return typeof raw === 'string' ? raw : ''
-      return state.blocks.map((block) => {
-        const text = String(block.text || '').trim()
-        const range = (block.entityRanges || [])[0]
-        const entity = range ? (state.entityMap?.[String(range.key)] ?? state.entityMap?.[range.key]) : null
-        if (entity?.type === 'IMAGE') { const src = String(entity.data?.src || entity.data?.url || ''); return src ? `<p><img src="${src}"></p>` : '<p></p>' }
-        if (!text) return ''
-        if (block.type === 'header-one') return `<h1>${text}</h1>`
-        if (block.type === 'header-two') return `<h2>${text}</h2>`
-        if (block.type === 'header-three') return `<h3>${text}</h3>`
-        if (block.type === 'blockquote') return `<blockquote>${text}</blockquote>`
-        if (block.type === 'ordered-list-item') return `<ol><li>${text}</li></ol>`
-        if (block.type === 'unordered-list-item') return `<ul><li>${text}</li></ul>`
-        return `<p>${text}</p>`
-      }).join('')
-    } catch { return typeof raw === 'string' ? raw : '' }
+    return doubanDraftJsonToHtml(raw)
   }
 
   async saveDraft(article: Article, options?: PublishOptions): Promise<SyncResult> {
@@ -194,20 +233,30 @@ export class DoubanAdapter extends CodeAdapter {
         }
         await options?.onDraftStage?.('filling')
         await options?.onDraftStage?.('saving_draft')
-        const created = await this.notePageRun(async (api: string, ck: string, draftProps: DoubanDraftProps) => {
-          // 与豆瓣当前页面的 Axios 请求保持一致：JSON 字符串请求体配合其默认 POST Content-Type。
-          const response = await fetch(`${api}/drafts`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-TOKEN': ck }, body: JSON.stringify({ draft_props: JSON.stringify(draftProps) }) })
-          return { status: response.status, text: (await response.text()).slice(0, 200000) }
-        }, [DOUBAN_DRAFT_API, this.formData!.ck, props], 'ISOLATED')
+        // 草稿 API 由扩展后台直接请求。不要再通过页面注入执行：豆瓣编辑器会让
+        // chrome.scripting.executeScript 偶发返回空结果，即使前面的图片上传均成功。
+        const createdResponse = await this.runtime.fetch(`${DOUBAN_DRAFT_API}/drafts`, {
+          method: 'POST', credentials: 'include',
+          // 新版 topic 编辑器提交的是 JSON。若声明为表单编码，豆瓣会把
+          // JSON 正文按表单解析，并返回 HTML 形式的 HTTP 500 错误页。
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'X-CSRF-TOKEN': this.formData!.ck,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ draft_props: JSON.stringify(props) }),
+        })
+        const created = { status: createdResponse.status, text: (await createdResponse.text()).slice(0, 200000) }
         let createdData: any = null
         try { createdData = JSON.parse(created.text) } catch { /* checked below */ }
         const draftId = String(createdData?.id ?? createdData?.draft?.id ?? '')
         if (created.status < 200 || created.status >= 300 || !draftId) throw new Error(`新版草稿创建失败（HTTP ${created.status}；${created.text.slice(0, 160)}）`)
         step(`新版草稿已保存:id=${draftId}`)
-        const read = await this.notePageRun(async (api: string, ck: string, id: string) => {
-          const response = await fetch(`${api}/${encodeURIComponent(id)}?ck=${encodeURIComponent(ck)}`, { credentials: 'include' })
-          return { status: response.status, text: (await response.text()).slice(0, 200000) }
-        }, [DOUBAN_DRAFT_API, this.formData!.ck, draftId], 'ISOLATED')
+        const readResponse = await this.runtime.fetch(`${DOUBAN_DRAFT_API}/${encodeURIComponent(draftId)}?ck=${encodeURIComponent(this.formData!.ck)}`, {
+          credentials: 'include',
+        })
+        const read = { status: readResponse.status, text: (await readResponse.text()).slice(0, 200000) }
         let readData: any = null
         try { readData = JSON.parse(read.text) } catch { /* checked below */ }
         if (read.status < 200 || read.status >= 300 || !readData) throw new Error(`新版草稿回读失败（HTTP ${read.status}）`)

@@ -9,7 +9,7 @@ import { ToutiaoAdapter } from '../../core/src/adapters/platforms/toutiao'
 import { CSDNAdapter } from '../../core/src/adapters/platforms/csdn'
 import { NeteaseAdapter, normalizeNeteaseDraftArticle, validateNeteaseFidelity } from '../../core/src/adapters/platforms/netease'
 import { normalizeXiaohongshuBodyForComparison, normalizeXiaohongshuDraftArticle, XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
-import { DoubanAdapter } from '../../core/src/adapters/platforms/douban'
+import { doubanDraftJsonToHtml, DoubanAdapter } from '../../core/src/adapters/platforms/douban'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -40,6 +40,38 @@ function doubanPage(noteId = '') {
 }
 
 describe('guarded Douban draft adapter', () => {
+  it('rejoins an IMAGE block and its following caption before fidelity validation', () => {
+    const html = doubanDraftJsonToHtml({
+      blocks: [
+        { key: '0', type: 'unstyled', text: '图片前正文', entityRanges: [] },
+        { key: '1', type: 'atomic', text: ' ', entityRanges: [{ offset: 0, length: 1, key: 0 }] },
+        { key: '2', type: 'unstyled', text: '盐雾试验图片说明', entityRanges: [] },
+        { key: '3', type: 'unstyled', text: '图片后正文', entityRanges: [] },
+      ],
+      entityMap: { 0: { type: 'IMAGE', data: { src: 'https://img.example/test.jpg' } } },
+    })
+
+    expect(html).toContain('<figure>')
+    expect(html).toContain('alt="盐雾试验图片说明"')
+    expect(html).toContain('<figcaption>盐雾试验图片说明</figcaption>')
+    expect(parseCanonicalArticle(html).blocks.filter((block) => block.kind !== 'image').map((block: any) => block.text)).toEqual(['图片前正文', '图片后正文'])
+  })
+
+  it('reads the native Douban image description without treating it as body text', () => {
+    const html = doubanDraftJsonToHtml({
+      blocks: [
+        { key: '0', type: 'unstyled', text: '图片前正文', entityRanges: [] },
+        { key: '1', type: 'atomic', text: ' ', entityRanges: [{ offset: 0, length: 1, key: 0 }] },
+        { key: '2', type: 'unstyled', text: '图片后正文', entityRanges: [] },
+      ],
+      entityMap: { 0: { type: 'IMAGE', data: { src: 'https://img.example/test.jpg', description: '豆瓣原生图片描述' } } },
+    })
+
+    expect(html).toContain('alt="豆瓣原生图片描述"')
+    expect(html).toContain('<figcaption>豆瓣原生图片描述</figcaption>')
+    expect(parseCanonicalArticle(html).blocks.filter((block) => block.kind !== 'image').map((block: any) => block.text)).toEqual(['图片前正文', '图片后正文'])
+  })
+
   it('reuses only the real note creation page so a preallocated note id is available', async () => {
     const adapter = new DoubanAdapter()
     const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
@@ -80,23 +112,30 @@ describe('guarded Douban draft adapter', () => {
 
   it('reuses a redirected Douban composer and does not keep opening tabs', async () => {
     const adapter = new DoubanAdapter()
-    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    const runtime = zhihuRuntime(async (input: any, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/drafts') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'draft-123' }), { status: 200 })
+      }
+      if (url.includes('/draft-123?')) {
+        return new Response(JSON.stringify({
+          id: 'draft-123',
+          draft_props: JSON.stringify({ title: '豆瓣测试', subtype: 'note', image_ids: [], content: {
+            blocks: [{ key: '0', type: 'unstyled', text: '正文', depth: 0, inlineStyleRanges: [], entityRanges: [], data: {} }],
+            entityMap: {},
+          } }),
+        }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    runtime.fetch = vi.fn(runtime.fetch)
     runtime.getCookie = vi.fn(async () => 'cookie-ck')
     runtime.tabs = {
       query: vi.fn()
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 41, url: 'https://www.douban.com/', title: '发言' }]),
       create: vi.fn(), waitForLoad: vi.fn(),
-      executeScript: vi.fn()
-        .mockResolvedValueOnce(doubanPage(''))
-        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({ id: 'draft-123' }) })
-        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({
-          id: 'draft-123',
-          draft_props: JSON.stringify({ title: '豆瓣测试', subtype: 'note', image_ids: [], content: {
-            blocks: [{ key: '0', type: 'unstyled', text: '正文', depth: 0, inlineStyleRanges: [], entityRanges: [], data: {} }],
-            entityMap: {},
-          } }),
-        }) }),
+      executeScript: vi.fn().mockResolvedValueOnce(doubanPage('')),
     }
     await adapter.init(runtime)
 
@@ -108,25 +147,42 @@ describe('guarded Douban draft adapter', () => {
     expect(result.postId).toBe('draft-123')
     expect(result.postUrl).toContain('/topic/create?draft_id=draft-123')
     expect(runtime.tabs.create).not.toHaveBeenCalled()
+    expect(runtime.fetch).toHaveBeenNthCalledWith(1, expect.stringMatching(/\/dwarf\/drafts$/), expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      headers: expect.objectContaining({
+        Accept: 'application/json',
+        'Content-Type': 'application/json;charset=UTF-8',
+        'X-CSRF-TOKEN': 'cookie-ck',
+        'X-Requested-With': 'XMLHttpRequest',
+      }),
+    }))
   })
 
   it('uses the new dwarf draft API and never needs the removed note id', async () => {
     const adapter = new DoubanAdapter()
-    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    const runtime = zhihuRuntime(async (input: any, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/drafts') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'draft-456' }), { status: 200 })
+      }
+      if (url.includes('/draft-456?')) {
+        return new Response(JSON.stringify({
+          id: 'draft-456', draft_props: {
+            title: '豆瓣测试', subtype: 'note', image_ids: [],
+            content: { blocks: [{ key: '0', type: 'unstyled', text: '正文', entityRanges: [] }], entityMap: {} },
+          },
+        }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    })
+    runtime.fetch = vi.fn(runtime.fetch)
     runtime.getCookie = vi.fn(async () => 'cookie-ck')
     runtime.tabs = {
       query: vi.fn(async () => [{ id: 31, url: 'https://www.douban.com/note/create' }]),
       create: vi.fn(async () => ({ id: 32, url: 'https://www.douban.com/note/create' })),
       waitForLoad: vi.fn(),
-      executeScript: vi.fn()
-        .mockResolvedValueOnce(doubanPage(''))
-        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({ id: 'draft-456' }) })
-        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({
-          id: 'draft-456', draft_props: {
-            title: '豆瓣测试', subtype: 'note', image_ids: [],
-            content: { blocks: [{ key: '0', type: 'unstyled', text: '正文', entityRanges: [] }], entityMap: {} },
-          },
-        }) }),
+      executeScript: vi.fn().mockResolvedValueOnce(doubanPage('')),
     }
     await adapter.init(runtime)
 
@@ -136,10 +192,13 @@ describe('guarded Douban draft adapter', () => {
 
     expect(result.success).toBe(true)
     expect(result.postId).toBe('draft-456')
-    expect(runtime.tabs.executeScript).toHaveBeenCalledTimes(3)
-    expect(runtime.tabs.executeScript.mock.calls[0][3]).toEqual({ world: 'MAIN' })
-    expect(runtime.tabs.executeScript.mock.calls[1][3]).toEqual({ world: 'ISOLATED' })
-    expect(runtime.tabs.executeScript.mock.calls[2][3]).toEqual({ world: 'ISOLATED' })
+    expect(runtime.tabs.executeScript).toHaveBeenCalledTimes(1)
+    expect(runtime.fetch).toHaveBeenCalledTimes(2)
+    expect(runtime.fetch).toHaveBeenNthCalledWith(1, expect.stringMatching(/\/dwarf\/drafts$/), expect.objectContaining({
+      method: 'POST',
+      credentials: 'include',
+      headers: expect.objectContaining({ 'Content-Type': 'application/json;charset=UTF-8' }),
+    }))
   })
 
   it('keeps public publish disabled', async () => {
