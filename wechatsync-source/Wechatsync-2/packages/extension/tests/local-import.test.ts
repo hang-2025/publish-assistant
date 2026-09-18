@@ -137,6 +137,9 @@ describe('guarded Douban draft adapter', () => {
     expect(result.success).toBe(true)
     expect(result.postId).toBe('draft-456')
     expect(runtime.tabs.executeScript).toHaveBeenCalledTimes(3)
+    expect(runtime.tabs.executeScript.mock.calls[0][3]).toEqual({ world: 'MAIN' })
+    expect(runtime.tabs.executeScript.mock.calls[1][3]).toEqual({ world: 'ISOLATED' })
+    expect(runtime.tabs.executeScript.mock.calls[2][3]).toEqual({ world: 'ISOLATED' })
   })
 
   it('keeps public publish disabled', async () => {

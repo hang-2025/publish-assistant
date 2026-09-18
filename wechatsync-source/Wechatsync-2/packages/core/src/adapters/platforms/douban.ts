@@ -61,14 +61,18 @@ export class DoubanAdapter extends CodeAdapter {
     return created.id
   }
 
-  private async notePageRun<T, A extends unknown[]>(fn: (...args: A) => T, args: A): Promise<T> {
+  private async notePageRun<T, A extends unknown[]>(
+    fn: (...args: A) => T,
+    args: A,
+    world: 'MAIN' | 'ISOLATED' = 'MAIN',
+  ): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tabId = await this.ensureNoteTab()
       try {
         // 豆瓣编辑器在后台标签页会被 Chrome 降频，尤其是上传完图片后紧接着发起草稿请求。
         // 激活是幂等的，只唤醒已经找到的编辑器标签页，不创建新页面，也不触碰用户数据。
         await Promise.resolve(this.runtime.tabs!.activate?.(tabId)).catch(() => {})
-        return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args)
+        return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args, { world })
       } catch (error) {
         const message = String((error as Error)?.message || '')
         if (attempt === 0 && (message.includes('No tab with id') || message.includes('cannot be edited') || message.includes('Frame with ID'))) {
@@ -194,7 +198,7 @@ export class DoubanAdapter extends CodeAdapter {
           // 与豆瓣当前页面的 Axios 请求保持一致：JSON 字符串请求体配合其默认 POST Content-Type。
           const response = await fetch(`${api}/drafts`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRF-TOKEN': ck }, body: JSON.stringify({ draft_props: JSON.stringify(draftProps) }) })
           return { status: response.status, text: (await response.text()).slice(0, 200000) }
-        }, [DOUBAN_DRAFT_API, this.formData!.ck, props])
+        }, [DOUBAN_DRAFT_API, this.formData!.ck, props], 'ISOLATED')
         let createdData: any = null
         try { createdData = JSON.parse(created.text) } catch { /* checked below */ }
         const draftId = String(createdData?.id ?? createdData?.draft?.id ?? '')
@@ -203,7 +207,7 @@ export class DoubanAdapter extends CodeAdapter {
         const read = await this.notePageRun(async (api: string, ck: string, id: string) => {
           const response = await fetch(`${api}/${encodeURIComponent(id)}?ck=${encodeURIComponent(ck)}`, { credentials: 'include' })
           return { status: response.status, text: (await response.text()).slice(0, 200000) }
-        }, [DOUBAN_DRAFT_API, this.formData!.ck, draftId])
+        }, [DOUBAN_DRAFT_API, this.formData!.ck, draftId], 'ISOLATED')
         let readData: any = null
         try { readData = JSON.parse(read.text) } catch { /* checked below */ }
         if (read.status < 200 || read.status >= 300 || !readData) throw new Error(`新版草稿回读失败（HTTP ${read.status}）`)

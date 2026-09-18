@@ -100,7 +100,8 @@ export interface RuntimeInterface {
     executeScript<T, A extends unknown[]>(
       tabId: number,
       func: (...args: A) => T | Promise<T>,
-      args: A
+      args: A,
+      options?: { world?: 'MAIN' | 'ISOLATED' }
     ): Promise<T>
   }
 

@@ -237,11 +237,12 @@ export class ExtensionRuntime implements RuntimeInterface {
     async executeScript<T, A extends unknown[]>(
       tabId: number,
       func: (...args: A) => T | Promise<T>,
-      args: A
+      args: A,
+      options?: { world?: 'MAIN' | 'ISOLATED' }
     ): Promise<T> {
       const results = await chrome.scripting.executeScript({
         target: { tabId },
-        world: 'MAIN',
+        world: options?.world ?? 'MAIN',
         func: func as (...args: unknown[]) => unknown,
         args: args as unknown[],
       })
