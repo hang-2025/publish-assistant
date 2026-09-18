@@ -8,8 +8,9 @@ import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, PlatformMeta, SyncResult } from '../../types'
 import type { PublishOptions } from '../types'
 import { createLogger } from '../../lib/logger'
+import { parseHTML } from 'linkedom'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity } from '../../article/canonical'
-import type { CanonicalArticle, FidelityReport } from '../../article/canonical'
+import type { CanonicalArticle, CanonicalBlock, FidelityReport } from '../../article/canonical'
 
 const logger = createLogger('Netease')
 const EDITOR_URL = 'https://mp.163.com/subscribe_v4/index.html#/article-publish'
@@ -104,6 +105,59 @@ function uploadedImageCandidates(envelope: any): string[] {
 }
 
 const compactNeteaseText = (value: string) => String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
+const normalizeNeteaseText = (value: string) => String(value || '').replace(/\s+/g, ' ').trim()
+const escapeNeteaseHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/**
+ * 网易编辑器会删除正文中重复的首个 H1，并会把 H2/H3 与相邻段落合并；
+ * table 则可能整块丢失。保存前映射到它稳定支持的段落结构，同时保留
+ * 完整文字顺序和图片锚点，供保存后回读校验。
+ */
+export function normalizeNeteaseDraftArticle(article: CanonicalArticle, title: string): CanonicalArticle {
+  const comparable = (value: string) => normalizeNeteaseText(value).replace(/[？?！!。:：]+$/g, '')
+  const sourceBlocks = [...article.blocks]
+  const first = sourceBlocks[0]
+  if (first?.kind === 'heading' && comparable(first.text) === comparable(title)) sourceBlocks.shift()
+
+  const normalized: CanonicalBlock[] = []
+  for (const block of sourceBlocks) {
+    if (block.kind === 'divider') continue
+    if (block.kind === 'heading') {
+      normalized.push({ kind: 'paragraph', text: block.text, html: `<strong>${block.html}</strong>` })
+      continue
+    }
+    if (block.kind === 'table') {
+      const { document } = parseHTML(`<!doctype html><html><body>${block.html}</body></html>`)
+      const rows = Array.from(document.querySelectorAll('tr'))
+      if (!rows.length) {
+        normalized.push({ kind: 'paragraph', text: block.text, html: escapeNeteaseHtml(block.text) })
+        continue
+      }
+      for (const row of rows) {
+        const cells = Array.from(row.children)
+          .filter((cell) => ['th', 'td'].includes(cell.tagName.toLowerCase()))
+          .map((cell) => normalizeNeteaseText(cell.textContent || ''))
+          .filter(Boolean)
+        if (!cells.length) continue
+        const text = cells.join(' ')
+        // 全角空格只用于可读分栏；保真比较会压缩空白，因此字符顺序不变。
+        normalized.push({ kind: 'paragraph', text, html: cells.map(escapeNeteaseHtml).join('　') })
+      }
+      continue
+    }
+    normalized.push(block)
+  }
+
+  let anchor = 0
+  let imageOrder = 0
+  const blocks = normalized.map((block): CanonicalBlock => {
+    if (block.kind === 'image') return { ...block, order: ++imageOrder, anchor }
+    anchor++
+    return block
+  })
+  const images = blocks.filter((block): block is Extract<CanonicalBlock, { kind: 'image' }> => block.kind === 'image')
+  return { ...article, blocks, images }
+}
 
 /** 定位两段压缩正文的第一个字符差异，用于失败时诊断平台改写位置。 */
 function firstTextDivergence(source: string, actual: string): string {
@@ -198,7 +252,7 @@ export class NeteaseAdapter extends CodeAdapter {
       const auth = await this.checkAuth()
       if (!auth.isAuthenticated || !this.accountId) throw new Error('请先在当前 Chrome 登录网易号')
 
-      const canonical = parseCanonicalArticle(article.html || '', article.title)
+      const canonical = normalizeNeteaseDraftArticle(parseCanonicalArticle(article.html || '', article.title), article.title)
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
       let content = renderCanonicalArticle(canonical)

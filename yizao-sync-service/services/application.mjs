@@ -22,6 +22,8 @@ import { TaskRepository } from '../repositories/task-repository.mjs';
 import { ReadOnlyExcelRepository } from '../repositories/excel-repository.mjs';
 import { ArticleService } from './article-service.mjs';
 import { ZhihuDraftService } from './zhihu-draft-service.mjs';
+import { CsdnDraftService } from './csdn-draft-service.mjs';
+import { DoubanDraftService } from './douban-draft-service.mjs';
 import { SohuDraftService } from './sohu-draft-service.mjs';
 import { ToutiaoDraftService } from './toutiao-draft-service.mjs';
 import { NeteaseDraftService } from './netease-draft-service.mjs';
@@ -548,6 +550,33 @@ async function loadZhihuDraftSnapshot(packageId) {
   return { ...context, snapshot };
 }
 
+async function loadCsdnDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'csdn') {
+    throw new Error();
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
+
+async function loadDoubanDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'douban') {
+    throw new Error(`发布包与豆瓣不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
 async function loadSohuDraftSnapshot(packageId) {
   const context = await loadSnapshotContext(packageId);
   const derived = derivePackagePlatformsForPreflight(context.segments);
@@ -605,6 +634,8 @@ async function loadXiaohongshuDraftSnapshot(packageId) {
 }
 
 const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
+const csdnDraftService = new CsdnDraftService({ store, loadSnapshot: loadCsdnDraftSnapshot });
+const doubanDraftService = new DoubanDraftService({ store, loadSnapshot: loadDoubanDraftSnapshot });
 const sohuDraftService = new SohuDraftService({ store, loadSnapshot: loadSohuDraftSnapshot });
 const toutiaoDraftService = new ToutiaoDraftService({ store, loadSnapshot: loadToutiaoDraftSnapshot });
 const neteaseDraftService = new NeteaseDraftService({ store, loadSnapshot: loadNeteaseDraftSnapshot });
@@ -759,6 +790,68 @@ async function cmdCompleteXiaohongshuDraft(payload) {
 async function cmdFailXiaohongshuDraft(payload) {
   assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
   return { mode: 'xiaohongshu-draft', task: sanitizeTask(await xiaohongshuDraftService.fail(payload || {})) };
+}
+
+async function cmdPrepareCsdnDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('csdn').createTask({
+    createDraftTask: () => csdnDraftService.prepare(payload || {}),
+  });
+  return { mode: 'csdn-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginCsdnDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('csdn').saveDraft({
+    saveDraft: () => csdnDraftService.begin(payload || {}),
+  });
+  return { mode: 'csdn-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceCsdnDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'csdn-draft', task: sanitizeTask(await csdnDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteCsdnDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'csdn-draft', task: sanitizeTask(await csdnDraftService.complete(payload || {})) };
+}
+
+async function cmdFailCsdnDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'csdn-draft', task: sanitizeTask(await csdnDraftService.fail(payload || {})) };
+}
+
+async function cmdPrepareDoubanDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('douban').createTask({
+    createDraftTask: () => doubanDraftService.prepare(payload || {}),
+  });
+  return { mode: 'douban-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginDoubanDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('douban').saveDraft({
+    saveDraft: () => doubanDraftService.begin(payload || {}),
+  });
+  return { mode: 'douban-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceDoubanDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'douban-draft', task: sanitizeTask(await doubanDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteDoubanDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'douban-draft', task: sanitizeTask(await doubanDraftService.complete(payload || {})) };
+}
+
+async function cmdFailDoubanDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'douban-draft', task: sanitizeTask(await doubanDraftService.fail(payload || {})) };
 }
 
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
@@ -967,7 +1060,7 @@ async function cmdCheckRealActionGate(payload) {
 function derivePackagePlatformsForPreflight(segments) {
   const official = allowedSiteKeysForSegments(segments);
   if (official.siteKeys.length || ['官网', 'website', '官网站点'].includes(segments[0])) return official;
-  if (!['主流平台', 'mainstream', 'platform', '平台'].includes(segments[0])) return official;
+  if (!['主流平台', '副平台', 'mainstream', 'platform', '平台'].includes(segments[0])) return official;
   const aliases = new Map([
     ['百家号', 'baijiahao'], ['baijiahao', 'baijiahao'], ['baijia', 'baijiahao'],
     ['知乎', 'zhihu'], ['zhihu', 'zhihu'],
@@ -975,6 +1068,8 @@ function derivePackagePlatformsForPreflight(segments) {
     ['头条', 'toutiao'], ['头条号', 'toutiao'], ['toutiao', 'toutiao'],
     ['网易', 'netease'], ['网易号', 'netease'], ['netease', 'netease'],
     ['小红书', 'xiaohongshu'], ['xiaohongshu', 'xiaohongshu'],
+    ['CSDN', 'csdn'], ['csdn', 'csdn'],
+    ['豆瓣', 'douban'], ['douban', 'douban'],
   ]);
   const found = [...new Set(segments.slice(1).map((item) => aliases.get(String(item).toLowerCase()) || aliases.get(String(item))).filter(Boolean))];
   return found.length === 1
@@ -1406,6 +1501,16 @@ const COMMANDS = {
   advanceXiaohongshuDraft: cmdAdvanceXiaohongshuDraft,
   completeXiaohongshuDraft: cmdCompleteXiaohongshuDraft,
   failXiaohongshuDraft: cmdFailXiaohongshuDraft,
+  prepareCsdnDraft: cmdPrepareCsdnDraft,
+  beginCsdnDraft: cmdBeginCsdnDraft,
+  advanceCsdnDraft: cmdAdvanceCsdnDraft,
+  completeCsdnDraft: cmdCompleteCsdnDraft,
+  failCsdnDraft: cmdFailCsdnDraft,
+  prepareDoubanDraft: cmdPrepareDoubanDraft,
+  beginDoubanDraft: cmdBeginDoubanDraft,
+  advanceDoubanDraft: cmdAdvanceDoubanDraft,
+  completeDoubanDraft: cmdCompleteDoubanDraft,
+  failDoubanDraft: cmdFailDoubanDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 

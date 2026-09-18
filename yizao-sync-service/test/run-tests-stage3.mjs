@@ -559,3 +559,165 @@ test('Windows acceptance launcher reports missing Node and occupied port without
     await new Promise((resolve) => listener.close(resolve));
   }
 });
+
+// ---------- CSDN 受保护草稿（与知乎同构的五阶段协调器） ----------
+import { csdnAdapter } from '../platforms/csdn/index.mjs';
+import { CsdnDraftService } from '../services/csdn-draft-service.mjs';
+
+test('CSDN platform adapter exposes guarded draft workflow and rejects public publish', () => {
+  assert.equal(csdnAdapter.workflow, 'guarded-draft');
+  assert.equal(csdnAdapter.id, 'csdn');
+});
+
+test('real action gate permits explicitly confirmed CSDN saveDraft only', () => {
+  const authorization = { stage: '3-csdn-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'csdn', authorization }).allowed, true);
+  assert.equal(checkRealActionGate({ action: 'publish', platform: 'csdn', authorization }).allowed, false);
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'csdn' }).allowed, false);
+});
+
+async function csdnFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage3-csdn-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  const service = new CsdnDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', 'CSDN', '测试'] }),
+  });
+  return { dir, store, service, change: () => { current = snapshot('e'.repeat(64)); } };
+}
+
+test('CSDN draft task follows durable happy path, allows re-save and blocks in-flight double click', async (t) => {
+  const f = await csdnFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(prepared.task.status, TASK_STATUS.READY);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists');
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.FILLING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.SAVING_DRAFT });
+  const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '13579246', postUrl: 'https://editor.csdn.net/md?articleId=13579246',
+  } });
+  assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(done.draftResult.readBackVerified, true);
+  assert.equal(done.states.publish.status, '未发布');
+  assert.equal(done.states.excel.status, '未登记');
+  assert.equal(done.states.archive.status, '未归档');
+  const resave = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(resave.started, true, '草稿已保存后用户再次确认即允许重复保存');
+  assert.equal(resave.task.retryOfTaskId, prepared.task.taskId);
+  assert.match(resave.task.taskKey, /:retry:2$/);
+});
+
+test('CSDN draft task allows a confirmed retry when failure happened before saving', async (t) => {
+  const f = await csdnFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const first = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: first.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.fail({ taskId: first.task.taskId, error: '图片上传失败' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  assert.match(retry.task.taskKey, /:retry:2$/);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists', '新任务执行中仍阻止连续双击');
+});
+
+test('CSDN draft task rejects untrusted URL, incomplete fidelity and source mutation', async (t) => {
+  const bad = await csdnFixture(); t.after(() => fs.rm(bad.dir, { recursive: true, force: true }));
+  const one = await bad.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await bad.service.begin({ taskId: one.task.taskId, snapshotId: one.task.snapshotId, userConfirmed: true });
+  await assert.rejects(() => bad.service.complete({ taskId: one.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '13579246', postUrl: 'https://example.com/md?articleId=13579246',
+  } }), /URL 不受信任/);
+
+  const changed = await csdnFixture(); t.after(() => fs.rm(changed.dir, { recursive: true, force: true }));
+  const two = await changed.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  changed.change();
+  await assert.rejects(() => changed.service.begin({ taskId: two.task.taskId, snapshotId: two.task.snapshotId, userConfirmed: true }), /发生变化/);
+  assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
+});
+
+// ---------- 豆瓣受保护草稿（私密日记作为草稿形态） ----------
+import { doubanAdapter } from '../platforms/douban/index.mjs';
+import { DoubanDraftService } from '../services/douban-draft-service.mjs';
+
+test('Douban platform adapter exposes guarded draft workflow and rejects public publish', () => {
+  assert.equal(doubanAdapter.workflow, 'guarded-draft');
+  assert.equal(doubanAdapter.id, 'douban');
+});
+
+test('real action gate permits explicitly confirmed Douban saveDraft only', () => {
+  const authorization = { stage: '3-douban-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'douban', authorization }).allowed, true);
+  assert.equal(checkRealActionGate({ action: 'publish', platform: 'douban', authorization }).allowed, false);
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'douban' }).allowed, false);
+});
+
+async function doubanFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage3-douban-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  const service = new DoubanDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', '豆瓣', '测试'] }),
+  });
+  return { dir, store, service, change: () => { current = snapshot('f'.repeat(64)); } };
+}
+
+test('Douban draft task follows durable happy path, allows re-save and blocks in-flight double click', async (t) => {
+  const f = await doubanFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(prepared.task.status, TASK_STATUS.READY);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists');
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.FILLING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.SAVING_DRAFT });
+  const done = await f.service.complete({ taskId: prepared.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '1789436012', postUrl: 'https://www.douban.com/topic/create?draft_id=1789436012',
+  } });
+  assert.equal(done.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(done.draftResult.readBackVerified, true);
+  assert.equal(done.states.publish.status, '未发布');
+  assert.equal(done.states.excel.status, '未登记');
+  assert.equal(done.states.archive.status, '未归档');
+  const resave = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(resave.started, true, '私密草稿保存后用户再次确认即允许重复保存');
+  assert.match(resave.task.taskKey, /:retry:2$/);
+});
+
+test('Douban draft task allows a confirmed retry when failure happened before saving', async (t) => {
+  const f = await doubanFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const first = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: first.task.taskId, snapshotId: first.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: first.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.fail({ taskId: first.task.taskId, error: '图片上传失败' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true);
+  assert.equal(retry.task.retryOfTaskId, first.task.taskId);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists', '新任务执行中仍阻止连续双击');
+});
+
+test('Douban draft task rejects untrusted URL and source mutation', async (t) => {
+  const bad = await doubanFixture(); t.after(() => fs.rm(bad.dir, { recursive: true, force: true }));
+  const one = await bad.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await bad.service.begin({ taskId: one.task.taskId, snapshotId: one.task.snapshotId, userConfirmed: true });
+  await assert.rejects(() => bad.service.complete({ taskId: one.task.taskId, result: {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true, fidelityReport: fidelityReport(),
+    postId: '1789436012', postUrl: 'https://example.com/note/1789436012/',
+  } }), /URL 不受信任/);
+
+  const changed = await doubanFixture(); t.after(() => fs.rm(changed.dir, { recursive: true, force: true }));
+  const two = await changed.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  changed.change();
+  await assert.rejects(() => changed.service.begin({ taskId: two.task.taskId, snapshotId: two.task.snapshotId, userConfirmed: true }), /发生变化/);
+  assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
+});

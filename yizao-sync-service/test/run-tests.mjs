@@ -238,7 +238,11 @@ test('平台 Registry：受保护草稿平台公开发布与未验收能力保�
   assert.equal((await platformRegistry.get('netease').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('zhihu').saveDraft()).allowed, false);
   assert.equal((await platformRegistry.get('eyzao.com').publish()).allowed, false);
-  assert.equal(platformRegistry.list().length, 9);
+  assert.equal(platformRegistry.get('CSDN').workflow, 'guarded-draft');
+  assert.equal((await platformRegistry.get('csdn').saveDraft()).allowed, false);
+  assert.equal(platformRegistry.get('豆瓣').workflow, 'guarded-draft');
+  assert.equal((await platformRegistry.get('douban').saveDraft()).allowed, false);
+  assert.equal(platformRegistry.list().length, 11);
   for (const adapter of platformRegistry.list()) {
     assert.equal(adapter.capabilities.saveDraft, false);
     assert.equal(adapter.capabilities.publish, false);

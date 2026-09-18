@@ -5,6 +5,14 @@ import { CodeAdapter, type ImageUploadResult } from '../code-adapter'
 import type { Article, AuthResult, SyncResult, PlatformMeta } from '../../types'
 import type { PublishOptions } from '../types'
 import { createLogger } from '../../lib/logger'
+import {
+  assertCaptionPolicy,
+  parseCanonicalArticle,
+  renderCanonicalArticle,
+  stripDuplicateTitleBlock,
+  validateWithCharOffsetFidelity,
+} from '../../article/canonical'
+import { parseHTML } from 'linkedom'
 
 const logger = createLogger('CSDN')
 
@@ -178,6 +186,143 @@ export class CSDNAdapter extends CodeAdapter {
     }
 
     return headers
+  }
+
+  /** 由 canonical 块生成编辑器 Markdown 源；图片 URL 取自已上传的 HTML，避免重复上传。 */
+  private renderCanonicalMarkdown(article: ReturnType<typeof parseCanonicalArticle>, imageUrls: string[]): string {
+    let imageIndex = 0
+    return article.blocks.map((block) => {
+      if (block.kind === 'heading') return `${'#'.repeat(Math.min(block.level, 6))} ${block.text}`
+      if (block.kind === 'image') {
+        const url = imageUrls[imageIndex++] || block.source
+        return `![${block.alt}](${url})`
+      }
+      if (block.kind === 'divider') return '---'
+      if (block.kind === 'quote') return block.html
+      return 'html' in block && block.html ? block.html : block.text
+    }).join('\n\n')
+  }
+
+  async saveDraft(article: Article, options?: PublishOptions): Promise<SyncResult> {
+    return this.withHeaderRules(this.HEADER_RULES, async () => {
+      const authorization = options?.draftAuthorization
+      if (authorization?.action !== 'saveDraft' || authorization.platform !== 'csdn'
+        || !/^tsk_[0-9]+_[0-9a-f]{8}$/.test(authorization.taskId || '')
+        || !/^snap-[0-9a-f]{24}$/.test(authorization.snapshotId || '')) {
+        throw new Error('CSDN saveDraft 缺少本地服务签发的任务/快照授权')
+      }
+      await options?.onDraftStage?.('running')
+
+      if (!this.userInfo) {
+        const auth = await this.checkAuth()
+        if (!auth.isAuthenticated) throw new Error('请先登录 CSDN')
+      }
+
+      // 发布包 HTML 是唯一正文来源；图注固定来自 HTML img.alt。
+      const canonical = parseCanonicalArticle(article.html || '', article.title)
+      if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
+      assertCaptionPolicy(canonical)
+      stripDuplicateTitleBlock(canonical, article.title)
+
+      await options?.onDraftStage?.('uploading')
+      const htmlContent = await this.processImages(
+        renderCanonicalArticle(canonical),
+        (src) => this.uploadImageByUrl(src),
+        {
+          skipPatterns: ['csdnimg.cn', 'csdn.net'],
+          onProgress: options?.onImageProgress,
+        }
+      )
+      // Markdown 从已上传的 HTML 中按顺序取图片 URL，同一张图只上传一份。
+      const { document: urlDoc } = parseHTML(`<!doctype html><html><body>${htmlContent}</body></html>`)
+      const imageUrls = Array.from(urlDoc.querySelectorAll('img')).map((img) => img.getAttribute('src') || '')
+      const markdownContent = this.renderCanonicalMarkdown(canonical, imageUrls)
+
+      await options?.onDraftStage?.('filling')
+      await options?.onDraftStage?.('saving_draft')
+      const apiPath = '/blog-console-api/v3/mdeditor/saveArticle'
+      const headers = await this.signRequest(apiPath)
+      const response = await this.runtime.fetch(
+        `https://bizapi.csdn.net${apiPath}`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+          body: JSON.stringify({
+            title: article.title,
+            markdowncontent: markdownContent,
+            content: htmlContent,
+            readType: 'public',
+            level: 0,
+            tags: '',
+            status: 2, // 草稿
+            categories: '',
+            type: 'original',
+            original_link: '',
+            authorized_status: false,
+            not_auto_saved: '1',
+            source: 'pc_mdeditor',
+            cover_images: [],
+            cover_type: 1,
+            is_new: 1,
+            vote_id: 0,
+            resource_id: '',
+            pubStatus: 'draft',
+            creator_activity_id: '',
+          }),
+        }
+      )
+
+      const res = await response.json() as { code: number; message?: string; msg?: string; data?: { id: string | number } }
+      logger.debug('Save response:', res)
+      if (res.code !== 200 || !res.data?.id) {
+        const rawSnippet = JSON.stringify(res).slice(0, 200)
+        throw new Error(`${res.msg || res.message || '保存草稿失败'}（响应：${rawSnippet}）`)
+      }
+      const postId = String(res.data.id)
+
+      // 保存后必须从编辑器详情接口回读；仅收到 ID 不算成功。
+      // 接口与官方编辑器一致：GET /v3/editor/getArticle?id={id}（非 mdeditor 前缀）。
+      const getApiPath = `/blog-console-api/v3/editor/getArticle?id=${encodeURIComponent(postId)}`
+      const getHeaders = await this.signRequest(getApiPath, 'GET')
+      const readBackResponse = await this.runtime.fetch(
+        `https://bizapi.csdn.net${getApiPath}`,
+        { method: 'GET', credentials: 'include', headers: getHeaders }
+      )
+      if (!readBackResponse.ok) throw new Error(`CSDN 草稿回读失败: ${readBackResponse.status}`)
+      const readBack = await readBackResponse.json() as {
+        code: number
+        data?: { title?: string; content?: string; markdowncontent?: string }
+      }
+      const readBackData = readBack?.data
+      if (readBack.code !== 200 || !readBackData || !String(readBackData.content || '').trim()) {
+        throw new Error(`CSDN 草稿回读接口返回失败（code ${readBack?.code ?? 'unknown'}；响应：${JSON.stringify(readBack).slice(0, 200)}）`)
+      }
+
+      // 保存时正文已去掉与标题重复的首块；校验两侧对称处理后再比对。
+      const sourceForCheck = parseCanonicalArticle(article.html || '', article.title)
+      stripDuplicateTitleBlock(sourceForCheck, article.title)
+      const readBackForCheck = parseCanonicalArticle(String(readBackData.content || ''), String(readBackData.title || ''))
+      stripDuplicateTitleBlock(readBackForCheck, String(readBackData.title || ''))
+      const fidelityReport = validateWithCharOffsetFidelity(sourceForCheck, renderCanonicalArticle(readBackForCheck), String(readBackData.title || ''), 'CSDN')
+      fidelityReport.checks.push(
+        { key: 'trusted-draft-url', status: 'PASS', required: true, detail: 'CSDN HTTPS 编辑器草稿 URL' },
+        { key: 'draft-only', status: 'PASS', required: true, detail: 'status=2/pubStatus=draft 仅保存草稿；未调用公开发布' },
+        { key: 'read-back-verified', status: 'PASS', required: true, detail: '已从 CSDN 编辑器详情接口回读' },
+      )
+      fidelityReport.summary.pass += 3
+
+      return this.createResult(fidelityReport.fidelityVerified, {
+        postId,
+        postUrl: `https://editor.csdn.net/md?articleId=${postId}`,
+        draftOnly: true,
+        readBackVerified: true,
+        fidelityVerified: fidelityReport.fidelityVerified,
+        fidelityReport,
+      })
+    }).catch((error) => this.createResult(false, {
+      error: (error as Error).message,
+    }))
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {

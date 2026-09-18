@@ -200,9 +200,9 @@ export class ExtensionRuntime implements RuntimeInterface {
    * Tab 管理
    */
   tabs = {
-    async query(urlPattern: string): Promise<Array<{ id: number; url?: string }>> {
+    async query(urlPattern: string): Promise<Array<{ id: number; url?: string; title?: string }>> {
       const tabs = await chrome.tabs.query({ url: urlPattern })
-      return tabs.filter(t => t.id !== undefined).map(t => ({ id: t.id!, url: t.url }))
+      return tabs.filter(t => t.id !== undefined).map(t => ({ id: t.id!, url: t.url, title: t.title }))
     },
 
     async create(url: string, active = false): Promise<{ id: number }> {

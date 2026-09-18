@@ -153,6 +153,8 @@ type MessageAction =
   | { type: 'YIZAO_TOUTIAO_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
   | { type: 'YIZAO_NETEASE_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
   | { type: 'YIZAO_XIAOHONGSHU_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
+  | { type: 'YIZAO_CSDN_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
+  | { type: 'YIZAO_DOUBAN_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
 
 const GUARDED_DRAFT_RUNTIME = {
   zhihu: { name: '知乎', advance: 'advanceZhihuDraft', complete: 'completeZhihuDraft', fail: 'failZhihuDraft' },
@@ -160,6 +162,8 @@ const GUARDED_DRAFT_RUNTIME = {
   toutiao: { name: '头条号', advance: 'advanceToutiaoDraft', complete: 'completeToutiaoDraft', fail: 'failToutiaoDraft' },
   netease: { name: '网易号', advance: 'advanceNeteaseDraft', complete: 'completeNeteaseDraft', fail: 'failNeteaseDraft' },
   xiaohongshu: { name: '小红书', advance: 'advanceXiaohongshuDraft', complete: 'completeXiaohongshuDraft', fail: 'failXiaohongshuDraft' },
+  csdn: { name: 'CSDN', advance: 'advanceCsdnDraft', complete: 'completeCsdnDraft', fail: 'failCsdnDraft' },
+  douban: { name: '豆瓣', advance: 'advanceDoubanDraft', complete: 'completeDoubanDraft', fail: 'failDoubanDraft' },
 } as const
 
 async function runGuardedDraft(
@@ -297,6 +301,14 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'YIZAO_XIAOHONGSHU_DRAFT': {
       return runGuardedDraft('xiaohongshu', message.payload)
+    }
+
+    case 'YIZAO_CSDN_DRAFT': {
+      return runGuardedDraft('csdn', message.payload)
+    }
+
+    case 'YIZAO_DOUBAN_DRAFT': {
+      return runGuardedDraft('douban', message.payload)
     }
 
     case 'SYNC_ARTICLE': {

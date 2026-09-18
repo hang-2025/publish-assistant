@@ -62,7 +62,7 @@ saveDraft / publish / getStatus
 
 - `platforms/official`：用户界面统一显示为“官方网站”平台；内部保留 eyzao.com、eyzao.cn、yzfanglei.com 三个站点 Adapter，分别执行包↔站点绑定、栏目映射与站点锁校验，当前仍为发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
-- `platforms/zhihu`、`platforms/sohu`、`platforms/toutiao`、`platforms/netease`、`platforms/xiaohongshu`：受保护单篇草稿协调，各平台未完成人工验收前 `verified/saveDraft` 仍为 false。
+- `platforms/zhihu`、`platforms/sohu`、`platforms/toutiao`、`platforms/netease`、`platforms/xiaohongshu`、`platforms/csdn`、`platforms/douban`：受保护单篇草稿协调，各平台未完成完整人工验收前 `verified/saveDraft` 仍为 false。
 
 新增平台时应依次修改：
 
@@ -102,8 +102,8 @@ pending → validating → ready → running
 - 当前仍然禁止 Excel 写入。
 - 文件删除和批量归档仍然禁止；仅允许用户当次确认后，把服务端复核的单个文章包从未归档根目录原子移动到独立归档根目录。
 - 未归档与已归档使用独立工作台页面；归档目录允许复用受控扫描与包详情接口做只读浏览，归档来源的文章包不提供平台动作入口。
-- `checkRealActionGate` 默认拒绝；只在 `zhihu/sohu/toutiao/netease/xiaohongshu + saveDraft + 对应独立阶段 + 当次确认 + 快照复核` 同时成立时允许。
-- 知乎、搜狐号、头条号、网易号、小红书 Platform Adapter 的 `publish()` 拒绝；其他平台的 `saveDraft()`、`publish()` 继续拒绝。
+- `checkRealActionGate` 默认拒绝；只在 `zhihu/sohu/toutiao/netease/xiaohongshu/csdn/douban + saveDraft + 对应独立阶段 + 当次确认 + 快照复核` 同时成立时允许。
+- 知乎、搜狐号、头条号、网易号、小红书、CSDN、豆瓣 Platform Adapter 的 `publish()` 拒绝；其他平台的 `saveDraft()`、`publish()` 继续拒绝。
 - 不能绕过 Host、Origin、Token、扩展 ID 绑定、packageId、realpath、站点绑定、请求大小和命令白名单验证。
 - `archive-sim.mjs` 的复制算法只在临时测试夹具中验证，没有暴露为 HTTP Command。
 

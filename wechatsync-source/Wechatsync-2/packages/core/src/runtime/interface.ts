@@ -79,7 +79,7 @@ export interface RuntimeInterface {
     /**
      * 查找匹配 URL 的 tab
      */
-    query(urlPattern: string): Promise<Array<{ id: number; url?: string }>>
+    query(urlPattern: string): Promise<Array<{ id: number; url?: string; title?: string }>>
     /**
      * 创建新 tab
      */

@@ -4,10 +4,12 @@ import { resolve } from 'node:path'
 import { importDocument, resolveImage, sanitizeHtml, previewDocument, withoutDuplicateTitle } from '../src/local-import/importer'
 import { CodeAdapter } from '../../core/src/adapters/code-adapter'
 import { ZhihuAdapter } from '../../core/src/adapters/platforms/zhihu'
-import { SohuAdapter } from '../../core/src/adapters/platforms/sohu'
+import { normalizeSohuDraftArticle, SohuAdapter, validateSohuFidelity } from '../../core/src/adapters/platforms/sohu'
 import { ToutiaoAdapter } from '../../core/src/adapters/platforms/toutiao'
-import { NeteaseAdapter, validateNeteaseFidelity } from '../../core/src/adapters/platforms/netease'
-import { normalizeXiaohongshuBodyForComparison, XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
+import { CSDNAdapter } from '../../core/src/adapters/platforms/csdn'
+import { NeteaseAdapter, normalizeNeteaseDraftArticle, validateNeteaseFidelity } from '../../core/src/adapters/platforms/netease'
+import { normalizeXiaohongshuBodyForComparison, normalizeXiaohongshuDraftArticle, XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
+import { DoubanAdapter } from '../../core/src/adapters/platforms/douban'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -28,6 +30,122 @@ const sohuDraftAuthorization = { action: 'saveDraft' as const, platform: 'sohu' 
 const toutiaoDraftAuthorization = { action: 'saveDraft' as const, platform: 'toutiao' as const, taskId: 'tsk_12345678_abcdef12', snapshotId: 'snap-cccccccccccccccccccccccc' }
 const neteaseDraftAuthorization = { action: 'saveDraft' as const, platform: 'netease' as const, taskId: 'tsk_12345678_1234abcd', snapshotId: 'snap-dddddddddddddddddddddddd' }
 const xiaohongshuDraftAuthorization = { action: 'saveDraft' as const, platform: 'xiaohongshu' as const, taskId: 'tsk_12345678_9876abcd', snapshotId: 'snap-eeeeeeeeeeeeeeeeeeeeeeee' }
+const doubanDraftAuthorization = { action: 'saveDraft' as const, platform: 'douban' as const, taskId: 'tsk_12345678_1357ace0', snapshotId: 'snap-ffffffffffffffffffffffff' }
+
+function doubanPage(noteId = '') {
+  return {
+    ck: '', noteId, userName: '豆瓣测试用户', avatar: '',
+    clues: { pageTitle: '写日记', loginWall: false, ckFrom: 'none', ckSuffix: 'none', noteIdPresent: Boolean(noteId), storageCk: 'none' },
+  }
+}
+
+describe('guarded Douban draft adapter', () => {
+  it('reuses only the real note creation page so a preallocated note id is available', async () => {
+    const adapter = new DoubanAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.getCookie = vi.fn(async () => 'cookie-ck')
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 31, url: 'https://www.douban.com/topic/create?subtype=note' }]),
+      create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn()
+        .mockResolvedValueOnce(doubanPage('987654321'))
+        .mockResolvedValueOnce(''),
+    }
+    await adapter.init(runtime)
+
+    const auth = await adapter.checkAuth()
+
+    expect(auth.isAuthenticated).toBe(true)
+    expect(runtime.tabs.query).toHaveBeenCalledWith('https://www.douban.com/topic/create*')
+    expect(runtime.tabs.create).not.toHaveBeenCalled()
+  })
+
+  it('opens a fresh note creation page instead of reusing an arbitrary Douban page', async () => {
+    const adapter = new DoubanAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.getCookie = vi.fn(async () => 'cookie-ck')
+    runtime.tabs = {
+      query: vi.fn(async () => []),
+      create: vi.fn(async () => ({ id: 32, url: 'https://www.douban.com/topic/create?subtype=note' })),
+      waitForLoad: vi.fn(),
+      executeScript: vi.fn()
+        .mockResolvedValueOnce(doubanPage('987654322'))
+        .mockResolvedValueOnce(''),
+    }
+    await adapter.init(runtime)
+
+    expect((await adapter.checkAuth()).isAuthenticated).toBe(true)
+    expect(runtime.tabs.create).toHaveBeenCalledWith('https://www.douban.com/topic/create?subtype=note', false)
+  })
+
+  it('reuses a redirected Douban composer and does not keep opening tabs', async () => {
+    const adapter = new DoubanAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.getCookie = vi.fn(async () => 'cookie-ck')
+    runtime.tabs = {
+      query: vi.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 41, url: 'https://www.douban.com/', title: '发言' }]),
+      create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn()
+        .mockResolvedValueOnce(doubanPage(''))
+        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({ id: 'draft-123' }) })
+        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({
+          id: 'draft-123',
+          draft_props: JSON.stringify({ title: '豆瓣测试', subtype: 'note', image_ids: [], content: {
+            blocks: [{ key: '0', type: 'unstyled', text: '正文', depth: 0, inlineStyleRanges: [], entityRanges: [], data: {} }],
+            entityMap: {},
+          } }),
+        }) }),
+    }
+    await adapter.init(runtime)
+
+    const result = await adapter.saveDraft({ title: '豆瓣测试', html: '<p>正文</p>', markdown: '' }, {
+      draftOnly: true, draftAuthorization: doubanDraftAuthorization,
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.postId).toBe('draft-123')
+    expect(result.postUrl).toContain('/topic/create?draft_id=draft-123')
+    expect(runtime.tabs.create).not.toHaveBeenCalled()
+  })
+
+  it('uses the new dwarf draft API and never needs the removed note id', async () => {
+    const adapter = new DoubanAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.getCookie = vi.fn(async () => 'cookie-ck')
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 31, url: 'https://www.douban.com/note/create' }]),
+      create: vi.fn(async () => ({ id: 32, url: 'https://www.douban.com/note/create' })),
+      waitForLoad: vi.fn(),
+      executeScript: vi.fn()
+        .mockResolvedValueOnce(doubanPage(''))
+        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({ id: 'draft-456' }) })
+        .mockResolvedValueOnce({ status: 200, text: JSON.stringify({
+          id: 'draft-456', draft_props: {
+            title: '豆瓣测试', subtype: 'note', image_ids: [],
+            content: { blocks: [{ key: '0', type: 'unstyled', text: '正文', entityRanges: [] }], entityMap: {} },
+          },
+        }) }),
+    }
+    await adapter.init(runtime)
+
+    const result = await adapter.saveDraft({ title: '豆瓣测试', html: '<p>正文</p>', markdown: '' }, {
+      draftOnly: true, draftAuthorization: doubanDraftAuthorization,
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.postId).toBe('draft-456')
+    expect(runtime.tabs.executeScript).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps public publish disabled', async () => {
+    const adapter = new DoubanAdapter()
+    const result = await adapter.publish({ title: '不能发布', html: '<p>正文</p>', markdown: '' })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('公开发布永久禁用')
+  })
+})
 
 function xiaohongshuRuntime(pageResult: any) {
   const executeScript = vi.fn().mockResolvedValueOnce({ ok: true, authenticated: true }).mockResolvedValueOnce(pageResult)
@@ -40,6 +158,17 @@ function xiaohongshuRuntime(pageResult: any) {
 }
 
 describe('guarded Xiaohongshu draft adapter', () => {
+  it('removes duplicate title/dividers and recalculates long-article image anchors', () => {
+    const source = parseCanonicalArticle(
+      '<h1>小红书测试</h1><p>导语</p><hr><img src="a.jpg" alt="现场图"><p>结尾</p>',
+      '小红书测试',
+    )
+    const normalized = normalizeXiaohongshuDraftArticle(source, '小红书测试')
+
+    expect(normalized.blocks.map((block) => block.kind)).toEqual(['paragraph', 'image', 'paragraph'])
+    expect(normalized.images[0].anchor).toBe(1)
+  })
+
   it('ignores only platform-generated layout whitespace when comparing long-article text', () => {
     const source = '港区对象主要作用\n\n雷电预警提示雷暴临近信息'
     const readBack = '港区对象\t主要作用\n雷电预警\u200B提示雷暴临近信息'
@@ -57,7 +186,8 @@ describe('guarded Xiaohongshu draft adapter', () => {
   it('only succeeds after the creator draft database readback matches', async () => {
     const stages: string[] = []
     const adapter = new XiaohongshuAdapter()
-    await adapter.init(xiaohongshuRuntime({ ok: true, draftId: 's:local-key', title: '测试', body: '正文\n\n现场图', imageCount: 1, imageCaptions: ['现场图'], imageAnchors: [1] }))
+    const runtime = xiaohongshuRuntime({ ok: true, draftId: 's:local-key', title: '测试', body: '正文\n\n现场图', imageCount: 1, imageCaptions: ['现场图'], imageAnchors: [1] })
+    await adapter.init(runtime)
     expect((await adapter.checkAuth()).isAuthenticated).toBe(true)
     const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p><img src="data:image/png;base64,iVBORw0KGgo=" alt="现场图">', markdown: '' }, {
       draftOnly: true, draftAuthorization: xiaohongshuDraftAuthorization, onDraftStage: (stage) => stages.push(stage),
@@ -66,6 +196,9 @@ describe('guarded Xiaohongshu draft adapter', () => {
     expect(result.readBackVerified).toBe(true)
     expect(result.fidelityReport?.checks.find((item) => item.key === 'draft-only')?.status).toBe('PASS')
     expect(result.fidelityReport?.checks.find((item) => item.key === 'caption-equals-html-alt')?.status).toBe('PASS')
+    const pageArticle = runtime.tabs.executeScript.mock.calls[1][2][0]
+    expect(pageArticle.html).toContain('<p>__YIZAO_IMAGE_1__</p><p>现场图</p>')
+    expect(pageArticle.html).not.toContain('__YIZAO_IMAGE_1__现场图')
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
   })
 
@@ -215,6 +348,44 @@ describe('guarded Zhihu draft adapter', () => {
 })
 
 describe('guarded Sohu draft adapter', () => {
+  it('maps duplicate titles, section headings and dividers to Sohu-stable layout', () => {
+    const source = parseCanonicalArticle(
+      '<h1>搜狐测试</h1><p>导语</p><hr><h2>一、标题</h2><table><tbody><tr><td>甲</td><td>乙</td></tr></tbody></table><img src="a.jpg" alt="图片说明">',
+      '搜狐测试',
+    )
+    const normalized = normalizeSohuDraftArticle(source, '搜狐测试')
+    const rendered = renderCanonicalArticle(normalized)
+
+    expect(normalized.blocks.map((block) => block.kind)).toEqual(['paragraph', 'paragraph', 'table', 'image'])
+    expect(rendered).not.toMatch(/<h[1-6]\b|<hr\b/i)
+    expect(rendered).toContain('<p><strong>一、标题</strong></p>')
+    expect(rendered).toContain('<table>')
+    expect(normalized.images[0].anchor).toBe(3)
+  })
+
+  it('accepts Sohu paragraph merging, splitting and empty paragraphs without weakening text checks', () => {
+    const source = parseCanonicalArticle(
+      '<p>第一段文字</p><p>第二段文字</p><img src="a.jpg" alt="图片说明"><p>第三段文字</p>',
+      '搜狐测试',
+    )
+    const equivalent = validateSohuFidelity(
+      source,
+      '<p>第一段文字<br>第二段文字</p><p><br></p><p><img src="https://img.mp.sohu.com/a.jpg" alt="图片说明" data-caption="图片说明"><span class="img-desc">图片说明</span></img></p><p>第三</p><p>段文字</p>',
+      '搜狐测试',
+    )
+    const changed = validateSohuFidelity(
+      source,
+      '<p>第一段文字第二段文字有改动</p><p><img src="https://img.mp.sohu.com/a.jpg" alt="图片说明" data-caption="图片说明"><span class="img-desc">图片说明</span></img></p><p>第三段文字</p>',
+      '搜狐测试',
+    )
+
+    expect(equivalent.checks.find((check) => check.key === 'main-block-order')?.status).toBe('PASS')
+    expect(equivalent.checks.find((check) => check.key === 'image-anchor')?.status).toBe('PASS')
+    expect(equivalent.checks.filter((check) => check.required && check.status !== 'PASS')).toEqual([])
+    expect(changed.checks.find((check) => check.key === 'main-block-order')?.status).toBe('FAIL')
+    expect(changed.fidelityVerified).toBe(false)
+  })
+
   it('recognizes the current v4 account list response', async () => {
     const adapter = new SohuAdapter()
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
@@ -583,6 +754,21 @@ describe('guarded Toutiao draft adapter', () => {
 })
 
 describe('guarded NetEase draft adapter', () => {
+  it('maps unsupported headings, tables and dividers to stable readable paragraphs', () => {
+    const source = parseCanonicalArticle(
+      '<h1>网易测试</h1><p>导语</p><hr><h2>一、标题</h2><table><tbody><tr><th>项目</th><th>说明</th></tr><tr><td>甲</td><td>乙</td></tr></tbody></table><img src="a.jpg" alt="图注"><p>结尾</p>',
+      '网易测试',
+    )
+    const normalized = normalizeNeteaseDraftArticle(source, '网易测试')
+    const rendered = renderCanonicalArticle(normalized)
+
+    expect(normalized.blocks.map((block) => block.kind)).toEqual(['paragraph', 'paragraph', 'paragraph', 'paragraph', 'image', 'paragraph'])
+    expect(rendered).not.toMatch(/<h[1-6]\b|<table\b|<hr\b/i)
+    expect(rendered).toContain('<p><strong>一、标题</strong></p>')
+    expect(rendered).toContain('<p>项目　说明</p><p>甲　乙</p>')
+    expect(normalized.images[0].anchor).toBe(4)
+  })
+
   it('accepts NetEase paragraph splitting while keeping exact text and image character offsets', () => {
     const source = parseCanonicalArticle('<h2>小节</h2><p>第一段</p><img src="a.jpg" alt="图注"><p>第二段</p>', '网易测试')
     const readBack = '<p>小节<br>第一段</p><p><img src="https://cms-bucket.ws.126.net/a.jpg" alt="图注"><br>图注</p><p>第二段</p>'
@@ -660,6 +846,7 @@ describe('guarded NetEase draft adapter', () => {
     expect(savedForm.ursToken).toBe('official-guardian-token')
     expect(savedContent).toContain('<br>网易图片说明</p>')
     expect(savedContent).toContain('https://dingyue.ws.126.net/test.jpg')
+    expect(savedContent).not.toMatch(/<h[1-6]\b|<table\b|<hr\b/i)
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
   })
 
@@ -1004,5 +1191,49 @@ describe('image upload safety', () => {
   })
   it('throws on upload failure rather than saving an incomplete article', async () => {
     await expect(adapter().processImages('<img src="data:image/png;base64,AAAA">',async () => { throw new Error('上传失败') })).rejects.toThrow('已停止保存文章')
+  })
+})
+
+describe('guarded CSDN draft adapter', () => {
+  const csdnDraftAuthorization = { action: 'saveDraft' as const, platform: 'csdn' as const, taskId: 'tsk_12345678_cafebabe', snapshotId: 'snap-cccccccccccccccccccccccc' }
+
+  it('saves a draft whose markdown image urls come from the uploaded html, then passes readback', async () => {
+    let savedBody: any = null
+    const adapter = new CSDNAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.includes('/v3/editor/getBaseInfo')) return new Response(JSON.stringify({ code: 200, data: { name: 'tester', nickname: '验收号', avatar: '', blog_url: '' } }), { status: 200 })
+      if (url.includes('/resource-api/v1/image/direct/upload/signature')) {
+        return new Response(JSON.stringify({ code: 400, message: 'no upload in test' }), { status: 200 })
+      }
+      if (url.includes('/mdeditor/saveArticle') && options?.method === 'POST') {
+        savedBody = JSON.parse(String(options.body))
+        return new Response(JSON.stringify({ code: 200, data: { id: '165717534' } }), { status: 200 })
+      }
+      if (url.includes('/v3/editor/getArticle') && options?.method === 'GET') {
+        return new Response(JSON.stringify({ code: 200, data: { title: savedBody.title, content: savedBody.content, markdowncontent: savedBody.markdowncontent } }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }))
+    const html = '<p>前文</p><p style="text-align:center;"><img src="https://img.mp.sohu.com/test.png" alt="CSDN图片注释"></p><h2>一、标题</h2><p><strong>后文</strong></p>'
+    const result = await adapter.saveDraft({ title: 'CSDN 测试', html, markdown: '' }, { draftOnly: true, draftAuthorization: csdnDraftAuthorization, onDraftStage: () => {} })
+    expect(result.success).toBe(true)
+    expect(result.fidelityVerified).toBe(true)
+    // 图片未在 CSDN 上传成功时保留原 URL,但 markdown 中必须存在图片行且 URL 与 HTML 一致
+    expect(savedBody.markdowncontent).toContain('![CSDN图片注释](https://img.mp.sohu.com/test.png)')
+    expect(savedBody.markdowncontent).not.toContain('<img')
+    expect(savedBody.markdowncontent).toContain('## 一、标题')
+  })
+
+  it('reports failure when the editor detail endpoint returns 404', async () => {
+    const adapter = new CSDNAdapter()
+    await adapter.init(zhihuRuntime(async (url, options) => {
+      if (url.includes('/v3/editor/getBaseInfo')) return new Response(JSON.stringify({ code: 200, data: { name: 'tester', nickname: '验收号', avatar: '', blog_url: '' } }), { status: 200 })
+      if (url.includes('/mdeditor/saveArticle')) return new Response(JSON.stringify({ code: 200, data: { id: '165717534' } }), { status: 200 })
+      if (url.includes('/v3/editor/getArticle')) return new Response('not found', { status: 404 })
+      return new Response('{}', { status: 404 })
+    }))
+    const result = await adapter.saveDraft({ title: 'CSDN 测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: csdnDraftAuthorization, onDraftStage: () => {} })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('回读失败: 404')
   })
 })

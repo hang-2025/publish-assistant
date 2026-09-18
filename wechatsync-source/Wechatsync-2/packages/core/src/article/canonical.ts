@@ -239,3 +239,74 @@ export function validateCanonicalFidelity(source: CanonicalArticle, readBackHtml
   const fidelityVerified = checks.every((check) => !check.required || check.status === 'PASS')
   return { schema: 'yizao-html-fidelity-report', version: 1, overall: !fidelityVerified ? 'FAIL' : summary.degraded ? 'DEGRADED' : 'PASS', fidelityVerified, checks, summary }
 }
+
+/** 压缩空白后的正文文本，用于平台重排段落后的稳定对照。 */
+export function compactCanonicalText(value: string): string {
+  return String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
+}
+
+/** 定位两段压缩正文的第一个字符差异，用于失败时诊断平台改写位置。 */
+export function firstCanonicalTextDivergence(source: string, actual: string): string {
+  const limit = Math.min(source.length, actual.length)
+  let index = 0
+  while (index < limit && source[index] === actual[index]) index += 1
+  const around = (value: string) => JSON.stringify(value.slice(Math.max(0, index - 10), index + 30))
+  return `首个差异@${index}（长度 源${source.length}/回读${actual.length}）：源${around(source)} 回读${around(actual)}`
+}
+
+function canonicalTextOf(article: CanonicalArticle): string {
+  return compactCanonicalText(article.blocks
+    .filter((block) => block.kind !== 'image' && block.kind !== 'divider')
+    .map((block) => 'text' in block ? block.text : '')
+    .join(''))
+}
+
+function canonicalImageOffsets(article: CanonicalArticle): number[] {
+  let offset = 0
+  const result: number[] = []
+  for (const block of article.blocks) {
+    if (block.kind === 'image') result.push(offset)
+    else if (block.kind !== 'divider' && 'text' in block) offset += compactCanonicalText(block.text).length
+  }
+  return result
+}
+
+/**
+ * 面向「平台会合并/拆分段落」的编辑器（网易号/搜狐号/CSDN 等）的保真校验：
+ * 正文顺序按压缩文本全等对照，图片锚点按每张图片前累计正文字符位置核对；
+ * 其余检查沿用 canonical 严格语义。
+ */
+export function validateWithCharOffsetFidelity(source: CanonicalArticle, readBackHtml: string, readBackTitle: string, platformLabel: string): FidelityReport {
+  const report = validateCanonicalFidelity(source, readBackHtml, readBackTitle)
+  const actual = parseCanonicalArticle(readBackHtml, readBackTitle)
+  const sourceText = canonicalTextOf(source)
+  const actualText = canonicalTextOf(actual)
+  const sourceOffsets = canonicalImageOffsets(source)
+  const actualOffsets = canonicalImageOffsets(actual)
+  const replace = (key: string, ok: boolean, detail: string) => {
+    const check = report.checks.find((item) => item.key === key)
+    if (check) { check.status = ok ? 'PASS' : 'FAIL'; check.detail = detail }
+  }
+  replace('main-block-order', sourceText === actualText,
+    sourceText === actualText ? `正文文字与顺序一致；允许${platformLabel}合并或拆分 HTML 段落` : `正文文字存在差异；${firstCanonicalTextDivergence(sourceText, actualText)}`)
+  replace('image-anchor', JSON.stringify(sourceOffsets) === JSON.stringify(actualOffsets),
+    JSON.stringify(sourceOffsets) === JSON.stringify(actualOffsets)
+      ? `按每张图片前累计正文字符位置核对；允许${platformLabel}重排段落`
+      : `图片锚点不一致；锚点 源=${JSON.stringify(sourceOffsets)} 回读=${JSON.stringify(actualOffsets)}`)
+  report.summary = { pass: 0, degraded: 0, unsupported: 0, fail: 0 }
+  for (const check of report.checks) report.summary[check.status.toLowerCase() as keyof typeof report.summary]++
+  report.fidelityVerified = report.checks.every((check) => !check.required || check.status === 'PASS')
+  report.overall = report.fidelityVerified ? (report.summary.degraded ? 'DEGRADED' : 'PASS') : 'FAIL'
+  return report
+}
+
+/**
+ * 平台编辑器顶部标题栏由接口的 title 字段承担；正文里再放一个相同文字的
+ * 大标题会在文章页显示两遍。在保存与校验两侧对称地移除该重复标题块。
+ */
+export function stripDuplicateTitleBlock(article: CanonicalArticle, title: string): void {
+  const first = article.blocks[0]
+  if (!first || first.kind !== 'heading') return
+  const drop = (value: string) => value.replace(/[？?！!。:：\s]+$/g, '')
+  if (drop(first.text) === drop(title) || drop(title).startsWith(drop(first.text))) article.blocks.shift()
+}

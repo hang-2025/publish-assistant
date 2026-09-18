@@ -37,7 +37,7 @@ export function acceptanceChecksPassed(checks: Array<{ key: string; ok: boolean 
 }
 
 export interface AcceptanceEvidenceInput {
-  platform?: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu'
+  platform?: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu' | 'csdn' | 'douban'
   timestamp: string
   serviceVersion: string
   protocolName: string

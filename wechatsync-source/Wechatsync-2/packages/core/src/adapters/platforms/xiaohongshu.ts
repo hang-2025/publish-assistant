@@ -8,7 +8,7 @@
 import { CodeAdapter } from '../code-adapter'
 import type { Article, AuthResult, PlatformMeta, SyncResult } from '../../types'
 import type { PublishOptions } from '../types'
-import type { FidelityCheck, FidelityReport } from '../../article/canonical'
+import type { CanonicalArticle, CanonicalBlock, FidelityCheck, FidelityReport } from '../../article/canonical'
 import { assertCaptionPolicy, parseCanonicalArticle } from '../../article/canonical'
 import { createLogger } from '../../lib/logger'
 
@@ -35,10 +35,37 @@ type PageResult = {
 }
 
 function normalize(value: string): string { return value.replace(/\s+/g, ' ').trim() }
+const escapeHtml = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 export function normalizeXiaohongshuBodyForComparison(value: string): string {
   // Tiptap 会按节点类型给表格、列表和段落插入不同的换行/空格，且新版
   // 页面偶尔加入零宽字符。这些属于排版边界，不是正文内容变化。
   return String(value || '').replace(/[\s\u200B-\u200D\uFEFF]+/g, '')
+}
+
+/**
+ * 小红书标题栏承担文章标题，空分隔线不会进入草稿。保存前使用与长文编辑器
+ * 一致的可见块重新计算图片锚点，避免用源 HTML 的装饰块位置校验平台草稿。
+ */
+export function normalizeXiaohongshuDraftArticle(article: CanonicalArticle, title: string): CanonicalArticle {
+  const comparable = (value: string) => normalize(value).replace(/[？?！!。:：]+$/g, '')
+  const sourceBlocks = [...article.blocks]
+  const first = sourceBlocks[0]
+  if (first?.kind === 'heading' && comparable(first.text) === comparable(title)) sourceBlocks.shift()
+
+  let anchor = 0
+  let imageOrder = 0
+  const blocks: CanonicalBlock[] = []
+  for (const block of sourceBlocks) {
+    if (block.kind === 'divider') continue
+    if (block.kind === 'image') {
+      blocks.push({ ...block, order: ++imageOrder, anchor })
+      continue
+    }
+    blocks.push(block)
+    anchor++
+  }
+  const images = blocks.filter((block): block is Extract<CanonicalBlock, { kind: 'image' }> => block.kind === 'image')
+  return { ...article, blocks, images }
 }
 
 function plainBody(article: ReturnType<typeof parseCanonicalArticle>): string {
@@ -51,7 +78,9 @@ function plainBody(article: ReturnType<typeof parseCanonicalArticle>): string {
 
 function longArticleHtml(article: ReturnType<typeof parseCanonicalArticle>): string {
   return article.blocks.map((block) => {
-    if (block.kind === 'image') return `<p>__YIZAO_IMAGE_${block.order}__${block.alt.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`
+    // 官方上传器会用图片节点替换光标所在整段。占位符与图注必须分段，
+    // 否则图注会和占位符一起被图片替换，article-draft 回读只剩空图注。
+    if (block.kind === 'image') return `<p>__YIZAO_IMAGE_${block.order}__</p><p>${escapeHtml(block.alt)}</p>`
     if (block.kind === 'heading') return `<h${Math.min(block.level, 2)}>${block.html}</h${Math.min(block.level, 2)}>`
     if (block.kind === 'paragraph') return `<p>${block.html}</p>`
     if (block.kind === 'list' || block.kind === 'quote') return block.kind === 'quote' ? `<blockquote>${block.html}</blockquote>` : block.html
@@ -134,7 +163,7 @@ export class XiaohongshuAdapter extends CodeAdapter {
         throw new Error('小红书 saveDraft 缺少本地服务签发的任务/快照授权')
       }
       await options?.onDraftStage?.('running')
-      const canonical = parseCanonicalArticle(article.html || '', article.title)
+      const canonical = normalizeXiaohongshuDraftArticle(parseCanonicalArticle(article.html || '', article.title), article.title)
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
       if (!canonical.images.length) throw new Error('小红书长文草稿至少需要 1 张图片')

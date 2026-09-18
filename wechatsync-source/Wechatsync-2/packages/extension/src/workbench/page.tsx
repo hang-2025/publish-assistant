@@ -70,10 +70,13 @@ const PLATFORM_EDITOR_URLS: Record<string, string> = {
   toutiao: 'https://mp.toutiao.com/profile_v4/graphic/publish',
   netease: 'https://mp.163.com/subscribe_v4/index.html#/article-publish',
   xiaohongshu: 'https://creator.xiaohongshu.com/publish/publish?from=menu_left&target=article',
+  csdn: 'https://editor.csdn.net/md/',
+  douban: 'https://www.douban.com/topic/create?subtype=note',
 }
 const PLATFORM_CONTINUATION_HOSTS: Record<string, string> = {
   zhihu: 'zhuanlan.zhihu.com', sohu: 'mp.sohu.com', toutiao: 'mp.toutiao.com',
   netease: 'mp.163.com', xiaohongshu: 'creator.xiaohongshu.com',
+  csdn: 'editor.csdn.net', douban: 'www.douban.com',
 }
 
 async function openPlatformTab(platformId: string, candidate?: string): Promise<void> {
@@ -106,8 +109,12 @@ function guardedDraft(platform: { id: string; name: string }): Capability {
     explain: `点击后自动检查并保存一篇草稿，再打开${platform.name}页面供你检查并完成发布；不会自动点击平台的最终发布。`,
   }
 }
-function notReady(why: string): Capability {
-  return { kind: 'not-ready', label: '待适配', tags: ['只读', '待适配', '需要另行授权'], explain: `${why}：本轮不提供发布或草稿流程入口，仅作只读展示。` }
+function notReady(why: string, platform?: { id: string; name: string }): Capability {
+  return {
+    kind: 'not-ready', label: platform ? `打开${platform.name}编辑器` : '查看适配说明', platform,
+    tags: ['只读', '待适配', '需要另行授权'],
+    explain: `${why}：当前仅提供人工打开编辑器入口，不会调用旧草稿接口，也不会自动点击发布。`,
+  }
 }
 
 function platformFromSegments(segments: string[], catalog: CapabilityPlatform[]) {
@@ -1026,7 +1033,7 @@ export function Workbench() {
         mark('login', `${platform?.name || '平台'}登录状态可用`, false, (e as Error).message || `无法检查${platform?.name || '平台'}登录状态`)
       }
 
-      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu'].includes(platform.id))
+      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu', 'csdn', 'douban'].includes(platform.id))
       mark('article', `仅选中 1 篇${platform?.name || ''}文章`, oneArticle, oneArticle ? `packageId ${detail!.packageId}` : `请在文章库只选择一篇${platform?.name || ''}文章`)
       if (oneArticle) {
         try {
@@ -1072,15 +1079,17 @@ export function Workbench() {
   }
 
   async function saveGuardedDraft() {
-    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu'].includes(openCap.platform.id)) return
+    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu', 'csdn', 'douban'].includes(openCap.platform.id)) return
     if (packageBusy(detail.packageId)) return // 双击/重复触发兜底；服务端另有幂等保护
-    const platform = openCap.platform as { id: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu'; name: string }
+    const platform = openCap.platform as { id: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu' | 'csdn' | 'douban'; name: string }
     const commandsByPlatform = {
       zhihu: { prepare: 'prepareZhihuDraft', begin: 'beginZhihuDraft', fail: 'failZhihuDraft', message: 'YIZAO_ZHIHU_DRAFT' },
       sohu: { prepare: 'prepareSohuDraft', begin: 'beginSohuDraft', fail: 'failSohuDraft', message: 'YIZAO_SOHU_DRAFT' },
       toutiao: { prepare: 'prepareToutiaoDraft', begin: 'beginToutiaoDraft', fail: 'failToutiaoDraft', message: 'YIZAO_TOUTIAO_DRAFT' },
       netease: { prepare: 'prepareNeteaseDraft', begin: 'beginNeteaseDraft', fail: 'failNeteaseDraft', message: 'YIZAO_NETEASE_DRAFT' },
       xiaohongshu: { prepare: 'prepareXiaohongshuDraft', begin: 'beginXiaohongshuDraft', fail: 'failXiaohongshuDraft', message: 'YIZAO_XIAOHONGSHU_DRAFT' },
+      csdn: { prepare: 'prepareCsdnDraft', begin: 'beginCsdnDraft', fail: 'failCsdnDraft', message: 'YIZAO_CSDN_DRAFT' },
+      douban: { prepare: 'prepareDoubanDraft', begin: 'beginDoubanDraft', fail: 'failDoubanDraft', message: 'YIZAO_DOUBAN_DRAFT' },
     } as const
     const commands = commandsByPlatform[platform.id]
     const pkgId = detail.packageId
@@ -1364,7 +1373,7 @@ export function Workbench() {
     <section className="acceptance-mode card" data-compatible={compatibility.ok ? 'yes' : 'no'}>
       <div>
         <strong>受保护草稿验收模式</strong>
-        <span>仅允许知乎、搜狐号、头条号、网易号、小红书单篇 saveDraft</span>
+        <span>仅允许知乎、搜狐号、头条号、网易号、小红书、CSDN 单篇 saveDraft</span>
         <span className="blocked">publish 永久禁用</span>
       </div>
       <dl className="acceptance-versions">
@@ -1499,7 +1508,6 @@ export function Workbench() {
               <div className="cards">{category.packages.map((pkg) => {
                 const archivedPackage = root !== 'unpublished'
                 const cap = archivedPackage ? null : capabilityFor(pkg.segments, capabilities?.platforms || FALLBACK_PLATFORM_CAPABILITIES)
-                const disabled = cap?.kind === 'not-ready'
                 const pkgNote = guardedDraftNotes[pkg.packageId || ''] || ''
                 const busyThis = packageBusy(pkg.packageId)
                 const okThis = Boolean(pkg.packageId && guardedDraftOkIds.includes(pkg.packageId))
@@ -1513,12 +1521,12 @@ export function Workbench() {
                       : (okThis ? '已保存并打开平台' : (quickDraftFailed ? '保存失败，点击重试' : cap!.label)))
                     : cap!.label))
                 return <div key={pkg.packageId} className="pkg-wrap">
-                <button className="pkg" data-cap={archivedPackage ? 'archived' : cap!.kind} disabled={disabled || packageAborted(pkg.packageId)} title={disabled ? cap!.explain : (busyThis && !packageAborted(pkg.packageId) ? '点击中止本次保存' : undefined)} onClick={() => busyThis ? abortGuardedDraft(pkg.packageId!) : (cap?.kind === 'guarded-draft' ? startQuickGuardedDraft(pkg) : openPackage(pkg))}>
+                <button className="pkg" data-cap={archivedPackage ? 'archived' : cap!.kind} disabled={packageAborted(pkg.packageId)} title={cap?.kind === 'not-ready' ? cap.explain : (busyThis && !packageAborted(pkg.packageId) ? '点击中止本次保存' : undefined)} onClick={() => busyThis ? abortGuardedDraft(pkg.packageId!) : (cap?.kind === 'guarded-draft' ? startQuickGuardedDraft(pkg) : openPackage(pkg))}>
                   <span className="pkg-caps">{archivedPackage && <i className="tag">已归档</i>}{pkg.segments[0] === '官网' && <i className="tag site-tag">{pkg.segments[1]}</i>}{(cap?.tags || []).map((tag) => <i key={tag} className={`tag${tag === '待适配' ? ' warn-tag' : ''}`}>{tag}</i>)}</span>
                   <strong>{pkg.title}</strong>
                   <small>{packageDate(pkg)}</small>
                   <span className="pkg-health">{pkg.issueCount ? `⚠ ${pkg.issueCount} 项问题` : '✓ 完整'} <small>图片 {pkg.imageCount} · ALT {pkg.altCount}</small></span>
-                  <span className={`pkg-action${cap?.kind === 'not-ready' ? ' off' : ''}${quickDraftFailed ? ' failed' : ''}${busyThis ? ' failed' : ''}`}>{actionLabel}</span>
+                  <span className={`pkg-action${quickDraftFailed ? ' failed' : ''}${busyThis ? ' failed' : ''}`}>{actionLabel}</span>
                 </button>
                 {!archivedPackage && roots.archive && <button type="button" className="pkg-archive" aria-label={`将《${pkg.title}》移动到已归档`} title="移动到已归档（不写 Excel）" onClick={() => archivePackage(pkg)} disabled={Boolean(archivingPackageId === pkg.packageId || busyThis)}>{archivingPackageId === pkg.packageId ? '…' : '○'}</button>}
                 {cap?.kind === 'guarded-draft' && <button type="button" className="pkg-details" onClick={() => openPackage(pkg)} disabled={busyThis}>查看详情</button>}
@@ -1719,6 +1727,9 @@ export function Workbench() {
           {openCap?.kind === 'not-ready' && <>
             <h3>待适配</h3>
             <p className="hint">{openCap.explain}</p>
+            {openCap.platform && <button type="button" onClick={() => openPlatformTab(openCap.platform!.id)}>
+              打开{openCap.platform.name}编辑器（手动）
+            </button>}
           </>}
 
           {checklist && <div className="checklist-card">
@@ -1921,7 +1932,7 @@ export function Workbench() {
     </section>}
 
     <footer>
-      <p>仅允许在用户当次确认、不可变快照复核和当前 Chrome 对应平台登录检查通过后，向知乎、搜狐号、头条号、网易号或小红书保存一篇草稿。公开发布、真实 Excel 写入、文件移动/删除、真实归档及旧执行器仍全部禁用；其他平台继续只读或模拟。</p>
+      <p>仅允许在用户当次确认、不可变快照复核和当前 Chrome 对应平台登录检查通过后，向知乎、搜狐号、头条号、网易号、小红书、CSDN 或豆瓣保存一篇草稿。公开发布、真实 Excel 写入、文件移动/删除、真实归档及旧执行器仍全部禁用；其他平台继续只读或模拟。</p>
       <p>能力标签说明：<em className="tag">只读</em> 仅查看不改写文件；<em className="tag">模拟</em> 不调用真实平台接口；<em className="tag">待适配</em> 平台/网站尚未接入；<em className="tag">需要另行授权</em> 真实发布/草稿/归档需单独授权并完成验收。</p>
     </footer>
   </main>

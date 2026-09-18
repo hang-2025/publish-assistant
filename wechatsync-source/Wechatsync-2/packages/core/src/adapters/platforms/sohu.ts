@@ -11,6 +11,7 @@ import {
   renderCanonicalArticle,
   validateCanonicalFidelity,
 } from '../../article/canonical'
+import type { CanonicalArticle, CanonicalBlock } from '../../article/canonical'
 
 const logger = createLogger('Sohu')
 
@@ -21,9 +22,14 @@ const compactSohuText = (value: string) => String(value || '').replace(/[\s\u200
  * 每张图片前累计正文字符位置才是稳定语义；图片数、顺序与图注仍沿用
  * canonical 的严格校验。
  */
-function validateSohuFidelity(source: ReturnType<typeof parseCanonicalArticle>, readBackHtml: string, readBackTitle: string): ReturnType<typeof validateCanonicalFidelity> {
+export function validateSohuFidelity(source: ReturnType<typeof parseCanonicalArticle>, readBackHtml: string, readBackTitle: string): ReturnType<typeof validateCanonicalFidelity> {
   const report = validateCanonicalFidelity(source, readBackHtml, readBackTitle)
   const actual = parseCanonicalArticle(readBackHtml, readBackTitle)
+  const orderedText = (article: ReturnType<typeof parseCanonicalArticle>) => article.blocks
+    .filter((block) => block.kind !== 'image' && block.kind !== 'divider' && 'text' in block)
+    .map((block) => compactSohuText(block.text))
+    .filter(Boolean)
+    .join('')
   const imageOffsets = (article: ReturnType<typeof parseCanonicalArticle>) => {
     let offset = 0
     const result: number[] = []
@@ -32,6 +38,18 @@ function validateSohuFidelity(source: ReturnType<typeof parseCanonicalArticle>, 
       else if (block.kind !== 'divider' && 'text' in block) offset += compactSohuText(block.text).length
     }
     return result
+  }
+  // 搜狐会把相邻段落合并、把一个段落拆开，或插入空段落。只要全部正文
+  // 字符和先后顺序一致，并且下方图片字符锚点一致，就不应误报正文丢失。
+  const mainBlockCheck = report.checks.find((item) => item.key === 'main-block-order')
+  const sourceText = orderedText(source)
+  const actualText = orderedText(actual)
+  if (mainBlockCheck) {
+    const ok = sourceText === actualText
+    mainBlockCheck.status = ok ? 'PASS' : 'FAIL'
+    mainBlockCheck.detail = ok
+      ? '正文文字与顺序一致；允许搜狐合并、拆分或插入空段落'
+      : `正文文字或顺序不一致；源 ${sourceText.length} 字 / 回读 ${actualText.length} 字`
   }
   const check = report.checks.find((item) => item.key === 'image-anchor')
   const sourceOffsets = imageOffsets(source)
@@ -59,6 +77,35 @@ function stripDuplicateTitleBlock(article: ReturnType<typeof parseCanonicalArtic
   if (!first || first.kind !== 'heading') return
   const drop = (value: string) => value.replace(/[？?！!。:：\s]+$/g, '')
   if (drop(first.text) === drop(title) || drop(title).startsWith(drop(first.text))) article.blocks.shift()
+}
+
+/**
+ * 映射到搜狐编辑器稳定支持的正文结构：标题栏承担文章标题，正文小标题
+ * 使用独立加粗段落，装饰分隔线不导入。表格、列表和引用仍保留原语义。
+ */
+export function normalizeSohuDraftArticle(article: CanonicalArticle, title: string): CanonicalArticle {
+  const source = { ...article, blocks: [...article.blocks], images: [...article.images] }
+  stripDuplicateTitleBlock(source, title)
+
+  let anchor = 0
+  let imageOrder = 0
+  const blocks: CanonicalBlock[] = []
+  for (const block of source.blocks) {
+    if (block.kind === 'divider') continue
+    if (block.kind === 'image') {
+      blocks.push({ ...block, order: ++imageOrder, anchor })
+      continue
+    }
+    if (block.kind === 'heading') {
+      blocks.push({ kind: 'paragraph', text: block.text, html: `<strong>${block.html}</strong>` })
+    } else {
+      blocks.push(block)
+    }
+    anchor++
+  }
+
+  const images = blocks.filter((block): block is Extract<CanonicalBlock, { kind: 'image' }> => block.kind === 'image')
+  return { ...source, blocks, images }
 }
 
 /**
@@ -272,10 +319,9 @@ export class SohuAdapter extends CodeAdapter {
       }
 
       // 发布包 HTML 是唯一正文来源。图注固定来自 HTML img.alt。
-      const canonical = parseCanonicalArticle(article.html || '', article.title)
+      const canonical = normalizeSohuDraftArticle(parseCanonicalArticle(article.html || '', article.title), article.title)
       if (!canonical.blocks.length) throw new Error('发布包 HTML 没有可保存的正文块')
       assertCaptionPolicy(canonical)
-      stripDuplicateTitleBlock(canonical, article.title)
       let content = withSohuNativeImageCaptions(renderCanonicalArticle(canonical))
 
       // Process images
@@ -394,8 +440,7 @@ export class SohuAdapter extends CodeAdapter {
 
       const draftUrl = `https://mp.sohu.com/mpfe/v4/contentManagement/news/addarticle?spm=smmp.articlelist.0.0&contentStatus=2&id=${postId}`
       // 保存时正文已去掉与标题重复的首块；校验两侧对称处理后再比对。
-      const sourceForCheck = parseCanonicalArticle(article.html || '', article.title)
-      stripDuplicateTitleBlock(sourceForCheck, article.title)
+      const sourceForCheck = normalizeSohuDraftArticle(parseCanonicalArticle(article.html || '', article.title), article.title)
       const readBackForCheck = parseCanonicalArticle(String(readBack.content || ''), String(readBack.title || ''))
       stripDuplicateTitleBlock(readBackForCheck, String(readBack.title || ''))
       const fidelityReport = validateSohuFidelity(sourceForCheck, renderCanonicalArticle(readBackForCheck), String(readBack.title || ''))

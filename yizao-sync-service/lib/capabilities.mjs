@@ -173,6 +173,40 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     evidence: ['已核对小红书官方写长文编辑器、article-draft 草稿库与 10000 字限制；自动测试覆盖任务授权、图片锚点、无编号 ALT 图注、草稿回读与公开发布拒绝'],
     risks: ['网页端结构可能变化；尚未使用专用小红书测试账号完成人工验收，因此 verified/saveDraft 仍为 false'],
   },
+  {
+    id: 'csdn',
+    name: 'CSDN',
+    group: '主流平台',
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '受保护的单篇 CSDN 博客草稿实现（待真实账号人工验收）'],
+    plannedActions: ['用专用测试账号完成一次真实草稿验收', '打开草稿给用户人工检查'],
+    realActionPolicy: {
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'stage7-explicit-confirmation-only',
+      publish: 'not-supported',
+      excelWrite: 'requires-explicit-authorization',
+      archiveMove: 'requires-explicit-authorization',
+    },
+    evidence: ['已核对 CSDN Markdown 编辑器保存/详情接口与草稿语义（status=2/pubStatus=draft）；自动测试覆盖任务授权、图片锚点、ALT 图注、草稿回读与公开发布拒绝'],
+    risks: ['CSDN API 签名密钥为社区公开逆向值，平台改版即失效；接口存在发文频控，仅适合单篇低频保存'],
+  },
+  {
+    id: 'douban',
+    name: '豆瓣',
+    group: '主流平台',
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '受保护的单篇新版日记草稿实现（待完整五图人工验收）'],
+    plannedActions: ['用非敏感五图发布包完成一次真实草稿验收', '打开草稿给用户人工检查'],
+    realActionPolicy: {
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'stage7-explicit-confirmation-only',
+      publish: 'not-supported',
+      excelWrite: 'requires-explicit-authorization',
+      archiveMove: 'requires-explicit-authorization',
+    },
+    evidence: ['已核对新版 dwarf/drafts 创建与按 ID 回读、topic 图片上传接口；真实账号已验证纯文字私密草稿保存，自动测试覆盖任务授权、回读保真与公开发布拒绝'],
+    risks: ['完整五图发布包尚待真实账号人工验收；豆瓣接口改版会导致保存失败，但不会回退调用公开发布'],
+  },
 ];
 
 const architectureById = new Map(platformArchitectureMetadata().map((item) => [item.id, item]));
@@ -235,8 +269,18 @@ export function checkRealActionGate({ action, platform, authorization } = {}) {
     && authorization?.stage === '7-xiaohongshu-draft'
     && authorization?.userConfirmed === true
     && authorization?.snapshotVerified === true;
+  const stageCsdnDraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'csdn'
+    && authorization?.stage === '3-csdn-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
+  const stageDoubanDraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'douban'
+    && authorization?.stage === '3-douban-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
   const guardedDraftAllowed = stage3DraftAllowed || stage4SohuDraftAllowed || stage5ToutiaoDraftAllowed
-    || stage6NeteaseDraftAllowed || stage7XiaohongshuDraftAllowed;
+    || stage6NeteaseDraftAllowed || stage7XiaohongshuDraftAllowed || stageCsdnDraftAllowed || stageDoubanDraftAllowed;
   const manualArchiveAllowed = actionKey === 'archiveMove'
     && Boolean(platformInfo)
     && authorization?.stage === '8-manual-archive'
