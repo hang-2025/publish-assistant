@@ -4,12 +4,12 @@
 
 ## 当前阶段
 
-当前代码包含 **知乎、搜狐号、头条号、网易号、小红书、CSDN 与豆瓣的受保护单篇草稿闭环（实现完成，完整真实账号验收待执行）**：
+当前代码包含 **知乎、搜狐号、头条号、网易号、小红书、CSDN、豆瓣与抖音文章的受保护单篇草稿闭环（实现完成，完整真实账号验收待执行）**：
 
-- 只有知乎、搜狐号、头条号、网易号、小红书、CSDN 或豆瓣 `saveDraft` 在用户当次明确确认、不可变快照复核和当前 Chrome 登录检查通过后可执行；
+- 只有知乎、搜狐号、头条号、网易号、小红书、CSDN、豆瓣或抖音 `saveDraft` 在用户当次明确确认、不可变快照复核和当前 Chrome 登录检查通过后可执行；
 - 发布包 `02-后台一键复制正文.html` 是受保护草稿的 canonical source；复用 Canonical Article 块模型保持正文顺序与图片锚点，并按 `HTML img.alt` 生成可见 Caption；若 ALT 以“图片N：/图N：”开头，会先去掉该打包编号，只显示实际说明；
-- 保存后必须回读并生成 Fidelity Report，标题/正文主块/图片数量、顺序、锚点与 Caption 等必需项全部通过后才可进入 `draft_saved`；
-- 知乎、搜狐号、头条号、网易号、小红书、CSDN、豆瓣 `publish()` 与所有平台公开发布始终拒绝；
+- 保存后必须回读并生成 Fidelity Report，标题/正文主块/图片数量、顺序、锚点与 Caption 等必需项全部通过后才可进入 `draft_saved`；抖音文章通过官方“一键导入”上传由当前快照临时生成、内嵌图片的 DOCX，不直接覆盖网页富文本 DOM；
+- 知乎、搜狐号、头条号、网易号、小红书、CSDN、豆瓣、抖音 `publish()` 与所有平台公开发布始终拒绝；
 - 不修改真实 Excel；
 - “未归档文章”和“已归档文章”使用两个独立页面，不在同一列表混排；
 - 文章卡片右上角提供独立的小圆圈归档入口；仅在用户当次确认后，将单个文章包从“未归档”移动到配置中的独立“已归档”目录，不混入“已发布”目录；
@@ -17,7 +17,7 @@
 - 不启动、停止或修改旧桌面自动发布助手；
 - 不复制、保存或接管 Chrome Cookie/Profile；仅使用扩展所在 Chrome 的当前会话。
 
-官网和百家号的模拟流程会停在“等待用户最终提交”；七个主流平台具有受保护的单篇保存草稿与回读流程，未完成各自完整真实账号人工验收前 capability 仍标记 `verified=false`、`saveDraft=false`。各平台图片下方只显示去除“图片N：/图N：”打包编号后的 ALT 说明。小红书使用“写长文”草稿，正文最多 10000 字；豆瓣使用新版 topic 编辑器的私密草稿库，不调用公开发布接口。
+官网和百家号的模拟流程会停在“等待用户最终提交”；八个主流平台具有受保护的单篇保存草稿与回读流程，未完成各自完整真实账号人工验收前 capability 仍标记 `verified=false`、`saveDraft=false`。各平台图片下方只显示去除“图片N：/图N：”打包编号后的 ALT 说明。小红书使用“写长文”草稿，正文最多 10000 字；豆瓣使用新版 topic 编辑器的私密草稿库，不调用公开发布接口。
 
 ## 目录
 
@@ -60,6 +60,38 @@ Chrome 打开 `chrome://extensions`，开启开发者模式后加载：
 ```text
 wechatsync-source/Wechatsync-2/packages/extension/dist
 ```
+
+## 同事首次安装或升级
+
+以下流程不会删除或覆盖 `yizao-sync-service/data/`、令牌、个人目录配置、任务记录、文章或 Excel。不要使用 `git reset --hard`，也不要复制别人的 `data/` 或 Chrome Profile。
+
+```powershell
+cd <publish-assistant 项目目录>
+git status --short
+git fetch origin
+git switch codex/fix-guarded-draft-workflow
+git pull --ff-only origin codex/fix-guarded-draft-workflow
+
+cd wechatsync-source\Wechatsync-2
+corepack pnpm install --frozen-lockfile
+cd packages\extension
+npm test
+npm run typecheck
+npm run build
+
+cd ..\..\..\..\yizao-sync-service
+npm test
+```
+
+升级完成后必须同时更新两端：
+
+1. 关闭仍在运行的旧 `node server.mjs` 本地服务，再双击 `yizao-sync-service/启动易造发布助手.cmd`；
+2. 在 `chrome://extensions` 对“文章同步助手”点击“重新加载”；
+3. 关闭所有旧工作台标签页，从扩展图标重新打开工作台；
+4. 顶部 `Service / Protocol / Extension / Build` 全部通过，并显示 `stage8-douyin-article-entry-v3.12` 后再测试草稿；
+5. 每台电脑分别登录自己的平台账号并完成首次服务配对，禁止共享令牌、扩展 Origin 或 Chrome 登录目录。
+
+如果 `git status --short` 显示同事修改过源码，应先提交到自己的分支或备份，然后再升级；不要用强制覆盖解决冲突。启动器现在会严格校验服务构建，旧服务占用 8788 时会明确报出实际构建和所需构建，不再让新扩展静默连接旧服务。
 
 ## 协作安全规则
 

@@ -155,6 +155,7 @@ type MessageAction =
   | { type: 'YIZAO_XIAOHONGSHU_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
   | { type: 'YIZAO_CSDN_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
   | { type: 'YIZAO_DOUBAN_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
+  | { type: 'YIZAO_DOUYIN_DRAFT'; payload: { article: any; snapshotId: string; taskId: string } }
 
 const GUARDED_DRAFT_RUNTIME = {
   zhihu: { name: '知乎', advance: 'advanceZhihuDraft', complete: 'completeZhihuDraft', fail: 'failZhihuDraft' },
@@ -164,6 +165,7 @@ const GUARDED_DRAFT_RUNTIME = {
   xiaohongshu: { name: '小红书', advance: 'advanceXiaohongshuDraft', complete: 'completeXiaohongshuDraft', fail: 'failXiaohongshuDraft' },
   csdn: { name: 'CSDN', advance: 'advanceCsdnDraft', complete: 'completeCsdnDraft', fail: 'failCsdnDraft' },
   douban: { name: '豆瓣', advance: 'advanceDoubanDraft', complete: 'completeDoubanDraft', fail: 'failDoubanDraft' },
+  douyin: { name: '抖音', advance: 'advanceDouyinDraft', complete: 'completeDouyinDraft', fail: 'failDouyinDraft' },
 } as const
 
 async function runGuardedDraft(
@@ -309,6 +311,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'YIZAO_DOUBAN_DRAFT': {
       return runGuardedDraft('douban', message.payload)
+    }
+
+    case 'YIZAO_DOUYIN_DRAFT': {
+      return runGuardedDraft('douyin', message.payload)
     }
 
     case 'SYNC_ARTICLE': {

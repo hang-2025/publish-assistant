@@ -79,6 +79,9 @@ export class DoubanAdapter extends CodeAdapter {
     id: 'douban', name: '豆瓣', icon: 'https://www.douban.com/favicon.ico',
     homepage: 'https://www.douban.com/topic/create?subtype=note',
     capabilities: ['article', 'draft', 'image_upload'],
+    // 豆瓣上传图片需要借用已登录的写日记页面。后台批量刷新登录状态时
+    // 不得因此创建编辑页；只有用户明确选择豆瓣时才执行交互式检查。
+    authCheckMode: 'interactive',
   }
   readonly preprocessConfig = { outputFormat: 'markdown' as const }
   private username = ''
@@ -118,9 +121,8 @@ export class DoubanAdapter extends CodeAdapter {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tabId = await this.ensureNoteTab()
       try {
-        // 豆瓣编辑器在后台标签页会被 Chrome 降频，尤其是上传完图片后紧接着发起草稿请求。
-        // 激活是幂等的，只唤醒已经找到的编辑器标签页，不创建新页面，也不触碰用户数据。
-        await Promise.resolve(this.runtime.tabs!.activate?.(tabId)).catch(() => {})
+        // 保持编辑页在后台执行。这里不能 activate：一篇五图文章会调用多次，
+        // 否则用户正在操作其他页面时会被反复抢走焦点、看起来像“自己弹网页”。
         return await this.runtime.tabs!.executeScript<T, A>(tabId, fn, args)
       } catch (error) {
         const message = String((error as Error)?.message || '')

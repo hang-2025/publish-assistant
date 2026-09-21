@@ -1,9 +1,8 @@
-// UI-only workflow improvements do not change the local-service contract. Keep the
-// stable acceptance identity so an already loaded compatible extension is not
-// needlessly blocked whenever the workbench UI is rebuilt.
-export const EXTENSION_BUILD_ID = 'stage7-caption-cleanup-v3.8'
-export const ACCEPTANCE_PACKAGE_VERSION = 38
-export const ACCEPTANCE_PACKAGE_LABEL = '3.8'
+// Core guarded-draft behavior changes bump this identity so the workbench cannot
+// silently pair a new local service with an older loaded extension bundle.
+export const EXTENSION_BUILD_ID = 'stage8-douyin-article-entry-v3.12'
+export const ACCEPTANCE_PACKAGE_VERSION = 42
+export const ACCEPTANCE_PACKAGE_LABEL = '3.12'
 export const EXPECTED_SERVICE_VERSION = '0.6.2-stage7-caption-cleanup'
 export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
 
@@ -37,7 +36,7 @@ export function acceptanceChecksPassed(checks: Array<{ key: string; ok: boolean 
 }
 
 export interface AcceptanceEvidenceInput {
-  platform?: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu' | 'csdn' | 'douban'
+  platform?: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu' | 'csdn' | 'douban' | 'douyin'
   timestamp: string
   serviceVersion: string
   protocolName: string

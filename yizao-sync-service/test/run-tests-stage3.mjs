@@ -721,3 +721,79 @@ test('Douban draft task rejects untrusted URL and source mutation', async (t) =>
   await assert.rejects(() => changed.service.begin({ taskId: two.task.taskId, snapshotId: two.task.snapshotId, userConfirmed: true }), /发生变化/);
   assert.equal((await changed.store.getTask(two.task.taskId)).status, TASK_STATUS.FAILED);
 });
+
+// ---------- 抖音受保护文章草稿 ----------
+import { douyinAdapter } from '../platforms/douyin/index.mjs';
+import { DouyinDraftService } from '../services/douyin-draft-service.mjs';
+
+test('Douyin platform adapter exposes guarded draft workflow and rejects public publish', () => {
+  assert.equal(douyinAdapter.workflow, 'guarded-draft');
+  assert.equal(douyinAdapter.id, 'douyin');
+});
+
+test('real action gate permits explicitly confirmed Douyin saveDraft only', () => {
+  const authorization = { stage: '3-douyin-draft', userConfirmed: true, snapshotVerified: true };
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'douyin', authorization }).allowed, true);
+  assert.equal(checkRealActionGate({ action: 'publish', platform: 'douyin', authorization }).allowed, false);
+  assert.equal(checkRealActionGate({ action: 'saveDraft', platform: 'douyin' }).allowed, false);
+});
+
+async function douyinFixture() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yizao-stage3-douyin-'));
+  const store = new TaskStore(path.join(dir, 'tasks'));
+  let current = snapshot();
+  const service = new DouyinDraftService({
+    store,
+    loadSnapshot: async () => ({ snapshot: current, rootName: 'unpublished', relativePath: current.source.relativePath, segments: ['主流平台', '抖音', '测试'] }),
+  });
+  return { dir, store, service, change: () => { current = snapshot('a'.repeat(63) + 'b'); } };
+}
+
+test('Douyin draft task follows durable happy path and blocks in-flight double click', async (t) => {
+  const f = await douyinFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(prepared.task.status, TASK_STATUS.READY);
+  const duplicate = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(duplicate.reason, 'exists');
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.fail({ taskId: prepared.task.taskId, error: '侦察阶段结束' });
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  assert.equal(retry.started, true, '失败终态后允许重试');
+});
+
+test('Douyin draft completion accepts only a verified creator-center article draft', async (t) => {
+  const f = await douyinFixture(); t.after(() => fs.rm(f.dir, { recursive: true, force: true }));
+  const prepared = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: prepared.task.taskId, snapshotId: prepared.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.FILLING });
+  await f.service.progress({ taskId: prepared.task.taskId, status: TASK_STATUS.SAVING_DRAFT });
+  const keys = [
+    'title', 'main-block-order', 'inline-emphasis', 'image-count', 'image-order', 'image-anchor',
+    'caption-equals-html-alt', 'trusted-draft-url', 'draft-only', 'read-back-verified',
+  ];
+  const checks = keys.map((key) => ({ key, status: 'PASS', required: true, detail: 'test' }));
+  const result = {
+    success: true, draftOnly: true, readBackVerified: true, fidelityVerified: true,
+    postId: '541636',
+    postUrl: 'https://creator.douyin.com/creator-micro/content/upload?page=article&draft_id=541636',
+    fidelityReport: {
+      schema: 'yizao-html-fidelity-report', version: 1, overall: 'PASS', fidelityVerified: true,
+      summary: { pass: checks.length, degraded: 0, unsupported: 0, fail: 0 }, checks,
+    },
+  };
+  const completed = await f.service.complete({ taskId: prepared.task.taskId, result });
+  assert.equal(completed.status, TASK_STATUS.WAITING_CONFIRMATION);
+  assert.equal(completed.draftResult.postId, '541636');
+
+  const retry = await f.service.prepare({ packageId: snapshot().source.packageId, userConfirmed: true });
+  await f.service.begin({ taskId: retry.task.taskId, snapshotId: retry.task.snapshotId, userConfirmed: true });
+  await f.service.progress({ taskId: retry.task.taskId, status: TASK_STATUS.UPLOADING });
+  await f.service.progress({ taskId: retry.task.taskId, status: TASK_STATUS.FILLING });
+  await f.service.progress({ taskId: retry.task.taskId, status: TASK_STATUS.SAVING_DRAFT });
+  await assert.rejects(() => f.service.complete({
+    taskId: retry.task.taskId,
+    result: { ...result, postUrl: 'https://example.com/creator-micro/content/upload?draft_id=541636' },
+  }), /URL 不受信任/);
+});

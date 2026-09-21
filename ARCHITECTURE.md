@@ -22,7 +22,7 @@ Local Files / read-only Excel / Future Database
 - `platforms` 是服务端 Platform Adapter Registry。知乎、搜狐号、头条号、网易号 Adapter 承接受保护的任务/闸门协调；其他 Adapter 仍只描述能力并承接模拟入口。
 - `repositories` 隔离 Article、Task 和 Excel 存储。当前 Article 为内存投影，Task 继续使用 JSON，Excel 只读。
 
-原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。知乎、搜狐号、头条号与网易号 Adapter 均通过 `saveDraft()` 上传、保存并回读单篇草稿，`publish()` 明确拒绝公开发布。头条号和网易号的网络调用在当前编辑器页面主世界中执行，以保留官方页面自身的请求安全处理；网易号保存前还必须取得官方页面风控令牌。扩展不会读取、复制或保存 Cookie/Profile。`packages/core/src/article/canonical.ts` 在平台 Adapter 之前把发布包 HTML 解析为可复用 Canonical Article 块模型，并负责语义渲染、`Caption = HTML img.alt` 策略与平台回读 Fidelity Report；其他网络 Adapter 不等于 Workbench 已启用真实能力。
+原 WechatSync 的平台网络适配器仍位于 `packages/core/src/adapters/platforms`。知乎、搜狐号、头条号与网易号 Adapter 均通过 `saveDraft()` 上传、保存并回读单篇草稿，`publish()` 明确拒绝公开发布。头条号和网易号的网络调用在当前编辑器页面主世界中执行，以保留官方页面自身的请求安全处理；网易号保存前还必须取得官方页面风控令牌。抖音 Adapter 从不可变快照生成内嵌图片的 OOXML DOCX，交给创作者中心官方“一键导入”控件，并只在回读通过后报告草稿成功。扩展不会读取、复制或保存 Cookie/Profile。`packages/core/src/article/canonical.ts` 在平台 Adapter 之前把发布包 HTML 解析为可复用 Canonical Article 块模型，并负责语义渲染、`Caption = HTML img.alt` 策略与平台回读 Fidelity Report；其他网络 Adapter 不等于 Workbench 已启用真实能力。
 
 ## 2. Article 生命周期
 
@@ -62,7 +62,7 @@ saveDraft / publish / getStatus
 
 - `platforms/official`：用户界面统一显示为“官方网站”平台；内部保留 eyzao.com、eyzao.cn、yzfanglei.com 三个站点 Adapter，分别执行包↔站点绑定、栏目映射与站点锁校验，当前仍为发布流程模拟。
 - `platforms/baijiahao`：百家号发布流程模拟。
-- `platforms/zhihu`、`platforms/sohu`、`platforms/toutiao`、`platforms/netease`、`platforms/xiaohongshu`、`platforms/csdn`、`platforms/douban`：受保护单篇草稿协调，各平台未完成完整人工验收前 `verified/saveDraft` 仍为 false。
+- `platforms/zhihu`、`platforms/sohu`、`platforms/toutiao`、`platforms/netease`、`platforms/xiaohongshu`、`platforms/csdn`、`platforms/douban`、`platforms/douyin`：受保护单篇草稿协调，各平台未完成完整人工验收前 `verified/saveDraft` 仍为 false。
 
 新增平台时应依次修改：
 

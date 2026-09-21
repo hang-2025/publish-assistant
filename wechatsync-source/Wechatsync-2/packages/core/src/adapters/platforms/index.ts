@@ -3,6 +3,7 @@
  * 私有适配器位于 private/ 子目录，通过 import.meta.glob 动态加载
  */
 export { DoubanAdapter } from './douban'
+export { DouyinAdapter } from './douyin'
 export { XueqiuAdapter } from './xueqiu'
 export { SohuAdapter } from './sohu'
 export { ToutiaoAdapter } from './toutiao'

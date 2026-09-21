@@ -24,6 +24,7 @@ import { ArticleService } from './article-service.mjs';
 import { ZhihuDraftService } from './zhihu-draft-service.mjs';
 import { CsdnDraftService } from './csdn-draft-service.mjs';
 import { DoubanDraftService } from './douban-draft-service.mjs';
+import { DouyinDraftService } from './douyin-draft-service.mjs';
 import { SohuDraftService } from './sohu-draft-service.mjs';
 import { ToutiaoDraftService } from './toutiao-draft-service.mjs';
 import { NeteaseDraftService } from './netease-draft-service.mjs';
@@ -577,6 +578,19 @@ async function loadDoubanDraftSnapshot(packageId) {
   });
   return { ...context, snapshot };
 }
+async function loadDouyinDraftSnapshot(packageId) {
+  const context = await loadSnapshotContext(packageId);
+  const derived = derivePackagePlatformsForPreflight(context.segments);
+  if (derived.siteKeys.length !== 1 || derived.siteKeys[0] !== 'douyin') {
+    throw new Error(`发布包与抖音不匹配：目录推导为 ${derived.siteKeys.join(', ') || '无法推导'}`);
+  }
+  const snapshot = await buildSendSnapshot({
+    info: context.info, readAsset: context.readAsset,
+    source: { packageId, rootName: context.rootName, relativePath: context.relativePath },
+    requireAltPerImage: true,
+  });
+  return { ...context, snapshot };
+}
 async function loadSohuDraftSnapshot(packageId) {
   const context = await loadSnapshotContext(packageId);
   const derived = derivePackagePlatformsForPreflight(context.segments);
@@ -636,6 +650,7 @@ async function loadXiaohongshuDraftSnapshot(packageId) {
 const zhihuDraftService = new ZhihuDraftService({ store, loadSnapshot: loadZhihuDraftSnapshot });
 const csdnDraftService = new CsdnDraftService({ store, loadSnapshot: loadCsdnDraftSnapshot });
 const doubanDraftService = new DoubanDraftService({ store, loadSnapshot: loadDoubanDraftSnapshot });
+const douyinDraftService = new DouyinDraftService({ store, loadSnapshot: loadDouyinDraftSnapshot });
 const sohuDraftService = new SohuDraftService({ store, loadSnapshot: loadSohuDraftSnapshot });
 const toutiaoDraftService = new ToutiaoDraftService({ store, loadSnapshot: loadToutiaoDraftSnapshot });
 const neteaseDraftService = new NeteaseDraftService({ store, loadSnapshot: loadNeteaseDraftSnapshot });
@@ -854,6 +869,37 @@ async function cmdFailDoubanDraft(payload) {
   return { mode: 'douban-draft', task: sanitizeTask(await doubanDraftService.fail(payload || {})) };
 }
 
+async function cmdPrepareDouyinDraft(payload) {
+  assertAllowedKeys(payload || {}, ['packageId', 'userConfirmed']);
+  const result = await platformRegistry.get('douyin').createTask({
+    createDraftTask: () => douyinDraftService.prepare(payload || {}),
+  });
+  return { mode: 'douyin-draft', ...result, task: sanitizeTask(result.task), busy: sanitizeTask(result.busy) };
+}
+
+async function cmdBeginDouyinDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'snapshotId', 'userConfirmed']);
+  const result = await platformRegistry.get('douyin').saveDraft({
+    saveDraft: () => douyinDraftService.begin(payload || {}),
+  });
+  return { mode: 'douyin-draft', ...result, task: sanitizeTask(result.task) };
+}
+
+async function cmdAdvanceDouyinDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'status', 'detail']);
+  return { mode: 'douyin-draft', task: sanitizeTask(await douyinDraftService.progress(payload || {})) };
+}
+
+async function cmdCompleteDouyinDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'result']);
+  return { mode: 'douyin-draft', task: sanitizeTask(await douyinDraftService.complete(payload || {})) };
+}
+
+async function cmdFailDouyinDraft(payload) {
+  assertAllowedKeys(payload || {}, ['taskId', 'error', 'fidelityReport']);
+  return { mode: 'douyin-draft', task: sanitizeTask(await douyinDraftService.fail(payload || {})) };
+}
+
 /** 官网/百家号执行预览：只生成发送快照 + 执行预览，不创建任务、不启动执行器。 */
 async function cmdPrepareOfficialTask(payload) {
   assertAllowedKeys(payload, ['packageId', 'siteKey']);
@@ -1070,6 +1116,7 @@ function derivePackagePlatformsForPreflight(segments) {
     ['小红书', 'xiaohongshu'], ['xiaohongshu', 'xiaohongshu'],
     ['CSDN', 'csdn'], ['csdn', 'csdn'],
     ['豆瓣', 'douban'], ['douban', 'douban'],
+    ['抖音', 'douyin'], ['douyin', 'douyin'], ['dy', 'douyin'],
   ]);
   const found = [...new Set(segments.slice(1).map((item) => aliases.get(String(item).toLowerCase()) || aliases.get(String(item))).filter(Boolean))];
   return found.length === 1
@@ -1511,6 +1558,11 @@ const COMMANDS = {
   advanceDoubanDraft: cmdAdvanceDoubanDraft,
   completeDoubanDraft: cmdCompleteDoubanDraft,
   failDoubanDraft: cmdFailDoubanDraft,
+  prepareDouyinDraft: cmdPrepareDouyinDraft,
+  beginDouyinDraft: cmdBeginDouyinDraft,
+  advanceDouyinDraft: cmdAdvanceDouyinDraft,
+  completeDouyinDraft: cmdCompleteDouyinDraft,
+  failDouyinDraft: cmdFailDouyinDraft,
 };
 const commandRouter = createCommandRouter(COMMANDS);
 

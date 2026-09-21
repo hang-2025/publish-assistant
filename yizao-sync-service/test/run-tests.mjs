@@ -51,8 +51,17 @@ test('Windows 启动器只接受严格扩展 Origin 并生成内部工作台地�
   assert.equal(workbenchUrlForOrigin('https://example.com'), null);
 });
 
-test('Windows 启动器不会把其他 8788 服务误认成本地服务', () => {
-  assert.equal(healthMatchesExpectedService({ ok: true, name: 'yizao-sync-service' }), true);
+test('Windows 启动器只接受名称与验收构建均匹配的本地服务', () => {
+  assert.equal(healthMatchesExpectedService({
+    ok: true,
+    name: 'yizao-sync-service',
+    build: { id: 'stage8-douyin-article-entry-v3.12', extensionBuildId: 'stage8-douyin-article-entry-v3.12' },
+  }), true);
+  assert.equal(healthMatchesExpectedService({
+    ok: true,
+    name: 'yizao-sync-service',
+    build: { id: 'old-build', extensionBuildId: 'old-build' },
+  }), false);
   assert.equal(healthMatchesExpectedService({ ok: true, name: 'other-service' }), false);
   assert.equal(healthMatchesExpectedService(null), false);
 });
@@ -242,7 +251,8 @@ test('平台 Registry：受保护草稿平台公开发布与未验收能力保�
   assert.equal((await platformRegistry.get('csdn').saveDraft()).allowed, false);
   assert.equal(platformRegistry.get('豆瓣').workflow, 'guarded-draft');
   assert.equal((await platformRegistry.get('douban').saveDraft()).allowed, false);
-  assert.equal(platformRegistry.list().length, 11);
+  assert.equal(platformRegistry.get('抖音').workflow, 'guarded-draft');
+  assert.equal(platformRegistry.list().length, 12);
   for (const adapter of platformRegistry.list()) {
     assert.equal(adapter.capabilities.saveDraft, false);
     assert.equal(adapter.capabilities.publish, false);
@@ -390,8 +400,8 @@ test('health 无需令牌，返回版本', async () => {
   const json = await res.json();
   assert.equal(json.name, 'yizao-sync-service');
   assert.equal(json.protocol.version, 2);
-  assert.equal(json.build.packageVersion, 38);
-  assert.equal(json.build.id, 'stage7-caption-cleanup-v3.8');
+  assert.equal(json.build.packageVersion, 42);
+  assert.equal(json.build.id, 'stage8-douyin-article-entry-v3.12');
 });
 
 test('命令接口：无 Origin / 网页 Origin / 错误 Host 一律拒绝', async () => {

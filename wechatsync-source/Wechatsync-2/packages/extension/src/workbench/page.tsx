@@ -1033,7 +1033,7 @@ export function Workbench() {
         mark('login', `${platform?.name || '平台'}登录状态可用`, false, (e as Error).message || `无法检查${platform?.name || '平台'}登录状态`)
       }
 
-      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu', 'csdn', 'douban'].includes(platform.id))
+      const oneArticle = Boolean(detail && platform && ['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu', 'csdn', 'douban', 'douyin'].includes(platform.id))
       mark('article', `仅选中 1 篇${platform?.name || ''}文章`, oneArticle, oneArticle ? `packageId ${detail!.packageId}` : `请在文章库只选择一篇${platform?.name || ''}文章`)
       if (oneArticle) {
         try {
@@ -1079,9 +1079,9 @@ export function Workbench() {
   }
 
   async function saveGuardedDraft() {
-    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu', 'csdn', 'douban'].includes(openCap.platform.id)) return
+    if (!detail || !preview || !openCap?.platform || !['zhihu', 'sohu', 'toutiao', 'netease', 'xiaohongshu', 'csdn', 'douban', 'douyin'].includes(openCap.platform.id)) return
     if (packageBusy(detail.packageId)) return // 双击/重复触发兜底；服务端另有幂等保护
-    const platform = openCap.platform as { id: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu' | 'csdn' | 'douban'; name: string }
+    const platform = openCap.platform as { id: 'zhihu' | 'sohu' | 'toutiao' | 'netease' | 'xiaohongshu' | 'csdn' | 'douban' | 'douyin'; name: string }
     const commandsByPlatform = {
       zhihu: { prepare: 'prepareZhihuDraft', begin: 'beginZhihuDraft', fail: 'failZhihuDraft', message: 'YIZAO_ZHIHU_DRAFT' },
       sohu: { prepare: 'prepareSohuDraft', begin: 'beginSohuDraft', fail: 'failSohuDraft', message: 'YIZAO_SOHU_DRAFT' },
@@ -1090,6 +1090,7 @@ export function Workbench() {
       xiaohongshu: { prepare: 'prepareXiaohongshuDraft', begin: 'beginXiaohongshuDraft', fail: 'failXiaohongshuDraft', message: 'YIZAO_XIAOHONGSHU_DRAFT' },
       csdn: { prepare: 'prepareCsdnDraft', begin: 'beginCsdnDraft', fail: 'failCsdnDraft', message: 'YIZAO_CSDN_DRAFT' },
       douban: { prepare: 'prepareDoubanDraft', begin: 'beginDoubanDraft', fail: 'failDoubanDraft', message: 'YIZAO_DOUBAN_DRAFT' },
+      douyin: { prepare: 'prepareDouyinDraft', begin: 'beginDouyinDraft', fail: 'failDouyinDraft', message: 'YIZAO_DOUYIN_DRAFT' },
     } as const
     const commands = commandsByPlatform[platform.id]
     const pkgId = detail.packageId
@@ -1106,16 +1107,35 @@ export function Workbench() {
         setShowAcceptanceDetails(true)
         if (acceptance.checks.get('login')?.ok === false) {
           await openPlatformTab(platform.id).catch(() => {})
-          throw new Error(`已打开${platform.name}登录页面；登录后回到工作台，再点击一次“保存并打开平台”`)
+          throw new Error(`${platform.name}登录检查未通过（原因见上方检查详情的 BLOCK 项）。已打开${platform.name}页面；请在该页面确认已登录后，回工作台点「重新检查」`)
         }
         throw new Error(`${platform.name}验收前自检未全部通过，已阻止真实草稿操作`)
       }
       // 用户点击文案明确的主按钮即构成本次 saveDraft 授权；不再追加第二个
       // 确认弹窗。服务端快照、Origin、Token 与真实动作闸门仍逐项复核。
       const userConfirmed = true
-      const prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>(commands.prepare, {
+      let prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>(commands.prepare, {
         packageId: detail.packageId, userConfirmed,
       }, { signal: controller.signal })
+      // 抖音官方导入可能因扩展重载/页面关闭留下本地 filling 锁。
+      // 用户再次点击另一个抖音包时，明确确认后只终止旧“本地任务”并重试；
+      // 不删除抖音草稿，也不把结果未知的旧任务伪装成成功。
+      if (!prepared.started && platform.id === 'douyin' && ['exists', 'account-busy'].includes(prepared.reason || '')) {
+        const blocking = prepared.busy || prepared.task
+        if (blocking?.taskId) {
+          const replace = window.confirm(
+            `抖音当前有一条未完成任务《${blocking.title || '未命名文章'}》（${blocking.draft?.stage || blocking.status || '执行中'}）。\n\n是否终止旧的本地任务，并改为导入当前文章？\n\n注意：不会删除抖音中可能已经生成的旧草稿，请稍后在抖音草稿箱核对。`,
+          )
+          if (!replace) throw new Error('已保留原抖音任务；未开始当前文章')
+          await call(commands.fail, {
+            taskId: blocking.taskId,
+            error: `用户确认终止旧本地任务，由当前文章《${detail.title}》继续；平台草稿结果待人工核对`,
+          })
+          prepared = await call<{ started: boolean; reason?: string; task?: ServerTask; busy?: ServerTask }>(commands.prepare, {
+            packageId: detail.packageId, userConfirmed,
+          }, { signal: controller.signal })
+        }
+      }
       if (!prepared.started || !prepared.task) {
         if (prepared.reason === 'exists') throw new Error('相同文章与快照已有任务，已阻止重复保存')
         if (prepared.reason === 'manual-review-required') throw new Error(`前次${platform.name}任务已进入保存阶段，结果可能已写入草稿箱；请先人工核对，已阻止重复保存`)
@@ -1131,7 +1151,15 @@ export function Workbench() {
       try {
         response = await chrome.runtime.sendMessage({
           type: commands.message,
-          payload: { taskId, snapshotId, article: { title: detail.title, html: preview.html, markdown: '' } },
+          payload: {
+            taskId, snapshotId,
+            article: {
+              title: detail.title,
+              html: preview.html,
+              markdown: '',
+              summary: detail.seo['SEO描述'] || detail.seo['SEO 描述'] || detail.seo['内容描述'] || detail.seo['描述'] || '',
+            },
+          },
         }) as { result?: Record<string, unknown>; error?: string }
       } catch (error) {
         const text = String((error as Error)?.message || '')

@@ -10,6 +10,9 @@ import { CSDNAdapter } from '../../core/src/adapters/platforms/csdn'
 import { NeteaseAdapter, normalizeNeteaseDraftArticle, validateNeteaseFidelity } from '../../core/src/adapters/platforms/netease'
 import { normalizeXiaohongshuBodyForComparison, normalizeXiaohongshuDraftArticle, XiaohongshuAdapter } from '../../core/src/adapters/platforms/xiaohongshu'
 import { doubanDraftJsonToHtml, DoubanAdapter } from '../../core/src/adapters/platforms/douban'
+import { buildDouyinSummary, DouyinAdapter } from '../../core/src/adapters/platforms/douyin'
+import { buildDouyinImportDocx } from '../../core/src/adapters/platforms/douyin-docx'
+import JSZip from 'jszip'
 import { preprocessForMultiplePlatforms } from '../src/lib/content-processor'
 import { acceptanceChecksPassed, buildAcceptanceEvidence, EXTENSION_BUILD_ID, serviceCompatibility } from '../src/workbench/acceptance'
 import { assertCaptionPolicy, parseCanonicalArticle, renderCanonicalArticle, validateCanonicalFidelity, ZHIHU_CAPTION_POLICY_MAX_LENGTH } from '../../core/src/article/canonical'
@@ -31,6 +34,7 @@ const toutiaoDraftAuthorization = { action: 'saveDraft' as const, platform: 'tou
 const neteaseDraftAuthorization = { action: 'saveDraft' as const, platform: 'netease' as const, taskId: 'tsk_12345678_1234abcd', snapshotId: 'snap-dddddddddddddddddddddddd' }
 const xiaohongshuDraftAuthorization = { action: 'saveDraft' as const, platform: 'xiaohongshu' as const, taskId: 'tsk_12345678_9876abcd', snapshotId: 'snap-eeeeeeeeeeeeeeeeeeeeeeee' }
 const doubanDraftAuthorization = { action: 'saveDraft' as const, platform: 'douban' as const, taskId: 'tsk_12345678_1357ace0', snapshotId: 'snap-ffffffffffffffffffffffff' }
+const douyinDraftAuthorization = { action: 'saveDraft' as const, platform: 'douyin' as const, taskId: 'tsk_12345678_2468bdf1', snapshotId: 'snap-121212121212121212121212' }
 
 function doubanPage(noteId = '') {
   return {
@@ -134,7 +138,7 @@ describe('guarded Douban draft adapter', () => {
       query: vi.fn()
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 41, url: 'https://www.douban.com/', title: '发言' }]),
-      create: vi.fn(), waitForLoad: vi.fn(),
+      create: vi.fn(), activate: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn().mockResolvedValueOnce(doubanPage('')),
     }
     await adapter.init(runtime)
@@ -147,6 +151,7 @@ describe('guarded Douban draft adapter', () => {
     expect(result.postId).toBe('draft-123')
     expect(result.postUrl).toContain('/topic/create?draft_id=draft-123')
     expect(runtime.tabs.create).not.toHaveBeenCalled()
+    expect(runtime.tabs.activate).not.toHaveBeenCalled()
     expect(runtime.fetch).toHaveBeenNthCalledWith(1, expect.stringMatching(/\/dwarf\/drafts$/), expect.objectContaining({
       method: 'POST',
       credentials: 'include',
@@ -206,6 +211,142 @@ describe('guarded Douban draft adapter', () => {
     const result = await adapter.publish({ title: '不能发布', html: '<p>正文</p>', markdown: '' })
     expect(result.success).toBe(false)
     expect(result.error).toContain('公开发布永久禁用')
+  })
+})
+
+describe('guarded Douyin draft adapter', () => {
+  it('prefers SEO description for the 30-character Douyin summary and falls back to the first paragraph', () => {
+    const canonical = parseCanonicalArticle('<h2>小标题</h2><p>正文首段用于摘要回退</p>', '测试')
+    expect(buildDouyinSummary('SEO描述优先', canonical)).toBe('SEO描述优先')
+    expect(buildDouyinSummary('', canonical)).toBe('正文首段用于摘要回退')
+    expect(buildDouyinSummary('一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三', canonical)).toBe('测试')
+  })
+
+  it('compresses a long SEO description into a complete Douyin summary instead of cutting a phrase', () => {
+    const canonical = parseCanonicalArticle(
+      '<p>正文第一段不应覆盖可压缩的 SEO 描述。</p>',
+      '数据中心智能防雷系统选型与应用指南',
+    )
+    expect(buildDouyinSummary(
+      '面向数据中心基础设施、机电与信息化负责人，说明数据中心智能防雷系统选型、配置与运维要点。',
+      canonical,
+    )).toBe('数据中心智能防雷系统选型、配置与运维要点。')
+  })
+
+  it('builds an official-import DOCX with ordered text, embedded images, and visible captions', async () => {
+    const onePixelPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    const canonical = parseCanonicalArticle(
+      `<h2>第一节</h2><p><strong>加粗正文</strong></p><img src="${onePixelPng}" alt="现场图片说明"><p>结尾</p>`,
+      '抖音导入测试',
+    )
+
+    const encoded = await buildDouyinImportDocx(canonical)
+    const zip = await JSZip.loadAsync(encoded, { base64: true })
+    const documentXml = await zip.file('word/document.xml')!.async('string')
+
+    expect(zip.file('word/media/image1.png')).toBeTruthy()
+    expect(documentXml).toContain('第一节')
+    expect(documentXml).toContain('<w:b/>')
+    expect(documentXml).toContain('descr="现场图片说明"')
+    expect(documentXml.indexOf('加粗正文')).toBeLessThan(documentXml.indexOf('现场图片说明'))
+    expect(documentXml).not.toContain('<w:t xml:space="preserve">现场图片说明</w:t>')
+  })
+
+  it('refuses a DOCX import when an image is not embedded in the authorized snapshot', async () => {
+    const canonical = parseCanonicalArticle('<p>正文</p><img src="https://example.com/a.jpg" alt="外链图片">', '测试')
+    await expect(buildDouyinImportDocx(canonical)).rejects.toThrow('不是可嵌入')
+  })
+
+  it('uses the current Chrome session cookie and waits for the creator SPA', async () => {
+    const adapter = new DouyinAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.getCookie = vi.fn(async (_domain: string, name: string) => name === 'sessionid' ? 'session-cookie' : null)
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17, url: 'https://creator.douyin.com/creator-micro/content/upload?page=post_image' }]),
+      create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async () => ({
+        title: '抖音创作者中心',
+        url: 'https://creator.douyin.com/creator-micro/content/upload?page=post_image',
+        nickname: '抖音验收号', strongCreatorDom: true, hasLoginForm: false,
+      })),
+    }
+    await adapter.init(runtime)
+
+    const auth = await adapter.checkAuth()
+
+    expect(auth).toMatchObject({ isAuthenticated: true, username: '抖音验收号' })
+    expect(runtime.getCookie).toHaveBeenCalledWith('douyin.com', 'sessionid')
+    expect(runtime.tabs.create).not.toHaveBeenCalled()
+  })
+
+  it('prefers the logged-in article editor over a stale Douyin login tab', async () => {
+    const adapter = new DouyinAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.getCookie = vi.fn(async () => null)
+    runtime.tabs = {
+      query: vi.fn(async () => [
+        { id: 17, url: 'https://creator.douyin.com/login' },
+        { id: 18, url: 'https://creator.douyin.com/creator-micro/content/upload?page=article' },
+      ]),
+      create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async () => ({
+        title: '发布文章',
+        url: 'https://creator.douyin.com/creator-micro/content/upload?page=article',
+        nickname: '', strongCreatorDom: true, hasLoginForm: false,
+      })),
+    }
+    await adapter.init(runtime)
+
+    const auth = await adapter.checkAuth()
+
+    expect(auth.isAuthenticated).toBe(true)
+    expect(runtime.tabs.executeScript).toHaveBeenCalledWith(18, expect.any(Function), [])
+    expect(runtime.tabs.create).not.toHaveBeenCalled()
+  })
+
+  it('keeps publish disabled and requires a guarded task before probing the page', async () => {
+    const adapter = new DouyinAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.tabs = { query: vi.fn(), create: vi.fn(), waitForLoad: vi.fn(), executeScript: vi.fn() }
+    await adapter.init(runtime)
+
+    await expect(adapter.publish({ title: '测试', html: '<p>正文</p>', markdown: '' })).rejects.toThrow('公开发布已禁用')
+    const result = await adapter.saveDraft({ title: '测试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('任务/快照授权')
+    expect(runtime.tabs.query).not.toHaveBeenCalled()
+  })
+
+  it('enters the article editor, waits for autosave, and returns a verified draft without publishing', async () => {
+    const adapter = new DouyinAdapter()
+    const runtime = zhihuRuntime(async () => new Response('{}', { status: 404 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 17, url: 'https://creator.douyin.com/creator-micro/content/upload?page=article' }]),
+      create: vi.fn(), activate: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async () => ({
+        ok: true, draftId: '541636',
+        url: 'https://creator.douyin.com/creator-micro/content/upload?page=article&draft_id=541636',
+        title: '抖音测试文章',
+        html: '<p><strong>正文</strong></p><figure><img src="a.jpg" alt="现场图"><figcaption>现场图</figcaption></figure>',
+        bodyText: '正文', imageCount: 1, savedText: '已保存', summary: 'SEO摘要', captions: ['现场图'],
+      })),
+    }
+    await adapter.init(runtime)
+
+    const result = await adapter.saveDraft({
+      title: '抖音测试文章',
+      html: '<h1>抖音测试文章</h1><p><strong>正文</strong></p><hr><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" alt="现场图">',
+      markdown: '', summary: 'SEO摘要',
+    }, {
+      draftOnly: true, draftAuthorization: douyinDraftAuthorization,
+    })
+
+    expect(result.success).toBe(true)
+    expect(result).toMatchObject({ postId: '541636', draftOnly: true, readBackVerified: true, fidelityVerified: true })
+    expect(result.fidelityReport?.checks.find((check) => check.key === 'draft-only')?.status).toBe('PASS')
+    expect(runtime.tabs.waitForLoad).not.toHaveBeenCalled()
+    expect(runtime.tabs.create).not.toHaveBeenCalled()
   })
 })
 
@@ -616,7 +757,12 @@ describe('guarded Toutiao draft adapter', () => {
       waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
+        if (request.method === 'HEAD') return { ok: true, status: 200, text: '', securityToken: '0,csrf-test-token,86370000,success,session' }
         if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { url: '//p1.toutiaoimg.com/origin/test', web_uri: 'pgc-image/test', width: 600, height: 400, mime_type: 'image/jpeg' } }) }
+        if (request.url.startsWith('/mp/agw/article/new')) {
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { media_id: 'media-9988', article_ad_type: 3, mp_publish_ab_val: 'current-ab' } }) }
+        }
         if (request.url.startsWith('/mp/agw/article/publish')) {
           savedForm = request.form
           savedContent = request.form.content
@@ -642,9 +788,93 @@ describe('guarded Toutiao draft adapter', () => {
     expect(result.postUrl).toBe('https://mp.toutiao.com/profile_v4/graphic/publish?from=edit&pgc_id=13579')
     expect(savedForm.save).toBe('0')
     expect(savedForm).not.toHaveProperty('save', '1')
+    expect(savedForm.article_ad_type).toBe('3')
+    expect(savedForm.title_id).toMatch(/^[0-9]+_media-9988$/)
+    expect(savedForm.draft_form_data).toBe('{"coverType":2}')
+    expect(JSON.parse(savedForm.extra)).toMatchObject({ content_source: 100000000402, tuwen_wtt_transfer_switch: '1' })
     expect(savedContent).toContain('class="pgc-img-caption">头条图片描述</p>')
     expect(savedContent).toContain('web_uri="pgc-image/test"')
+    expect(savedContent).toContain('data-track="1"')
     expect(stages).toEqual(['running', 'uploading', 'filling', 'saving_draft'])
+    const fillRequest = (runtime.tabs.executeScript as any).mock.calls.map((call: any[]) => call[2][0]).find((request: any) => request.kind === 'fill-editor')
+    expect(fillRequest.title).toBe('头条测试')
+    expect(fillRequest.html).toContain('class="pgc-img-caption">头条图片描述</p>')
+    const fillProcedure = String((runtime.tabs.executeScript as any).mock.calls.find((call: any[]) => call[2][0]?.kind === 'fill-editor')?.[1])
+    expect(fillProcedure).toContain('stripLeadingEditorPlaceholders')
+    expect(fillProcedure).toMatch(/tag === ["']p["'] \|\| tag === ["']div["'] \|\| tag === ["']br["']/)
+    const publishRequest = (runtime.tabs.executeScript as any).mock.calls.map((call: any[]) => call[2][0]).find((request: any) => String(request.url || '').startsWith('/mp/agw/article/publish'))
+    expect(publishRequest.headers['x-secsdk-csrf-token']).toBe('csrf-test-token')
+    expect(publishRequest.url).toContain('mp_publish_ab_val=current-ab')
+  })
+
+  it('keeps Toutiao business diagnostics when the draft API returns a generic failure', async () => {
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id: '88' } } }), { status: 200 }))
+    runtime.tabs = {
+      query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
+      executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
+        if (request.url.startsWith('/mp/agw/article/new')) return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { media_id: '88', article_ad_type: 3 } }) }
+        if (request.method === 'HEAD') return { ok: true, status: 200, text: '', securityToken: '0,csrf-diagnostic-token,86370000,success,session' }
+        return { ok: true, status: 200, text: JSON.stringify({ code: 7050, message: '保存失败', data: { prompt: '请刷新编辑页后重试' }, traceId: 'trace-safe-123' }) }
+      }),
+    }
+    await adapter.init(runtime)
+
+    const result = await adapter.saveDraft({ title: '头条诊断', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('保存失败')
+    expect(result.error).toContain('请刷新编辑页后重试')
+    expect(result.error).toContain('code=7050')
+    expect(result.error).toContain('页面安全令牌=已附加')
+    expect(result.error).toContain('traceId=trace-safe-123')
+    expect(result.error).not.toContain('csrf-diagnostic-token')
+  })
+
+  it('stops before protocol save when the current Toutiao editor cannot accept the article', async () => {
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id: '88' } } }), { status: 200 }))
+    const executeScript = vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
+      const request = args[0]
+      if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: false, titleKind: 'textarea', bodyKind: '' }
+      return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: {} }) }
+    })
+    runtime.tabs = { query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(), executeScript }
+    await adapter.init(runtime)
+
+    const result = await adapter.saveDraft({ title: '页面导入检查', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('页面导入失败')
+    expect(executeScript.mock.calls.some((call: any[]) => String(call[2][0]?.url || '').includes('/article/publish'))).toBe(false)
+  })
+
+  it('retries once when Chrome temporarily locks the Toutiao editor tab', async () => {
+    const adapter = new ToutiaoAdapter()
+    const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id: '88' } } }), { status: 200 }))
+    let savedContent = ''
+    const executeScript = vi.fn()
+      .mockRejectedValueOnce(new Error('Tabs cannot be edited right now (user may be dragging a tab).'))
+      .mockImplementation(async (_tabId: number, _func: unknown, args: any[]) => {
+        const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
+        if (request.method === 'HEAD') return { ok: true, status: 200, text: '' }
+        if (request.url.startsWith('/mp/agw/article/publish')) {
+          savedContent = request.form.content
+          return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '97531' } }) }
+        }
+        return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { pgc_id: '97531', title: '头条重试', content: savedContent } }) }
+      })
+    runtime.tabs = { query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(), executeScript }
+    await adapter.init(runtime)
+
+    const result = await adapter.saveDraft({ title: '头条重试', html: '<p>正文</p>', markdown: '' }, { draftOnly: true, draftAuthorization: toutiaoDraftAuthorization })
+
+    expect(result.success).toBe(true)
+    expect(result.postId).toBe('97531')
+    expect(executeScript).toHaveBeenCalledTimes(6)
   })
 
   it('does not report success when platform readback fails', async () => {
@@ -670,6 +900,7 @@ describe('guarded Toutiao draft adapter', () => {
       query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
         if (request.imageSource) {
           return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { image_list: [{ image_url: '//p3.toutiaoimg.com/origin/nested-test', origin_web_uri: 'pgc-image/nested-test', img_width: 600, img_height: 400 }] } }) }
         }
@@ -701,6 +932,7 @@ describe('guarded Toutiao draft adapter', () => {
       query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
         if (request.imageSource) {
           return {
             ok: true,
@@ -748,6 +980,7 @@ describe('guarded Toutiao draft adapter', () => {
       query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
         if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { image_uri: 'tos-cn-i-test/generated' } }) }
         if (request.url.startsWith('/mp/agw/article/publish')) {
           savedContent = request.form.content
@@ -771,6 +1004,7 @@ describe('guarded Toutiao draft adapter', () => {
     const runtime = zhihuRuntime(async () => new Response(JSON.stringify({ data: { user: { id_str: '88' } } }), { status: 200 }))
     const executeScript = vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
       const request = args[0]
+      if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
       if (request.imageSource) {
         return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { origin_image_url: 'https://evil.example/image.jpg', image_uri: 'https://evil.example/image.jpg' } }) }
       }
@@ -797,6 +1031,7 @@ describe('guarded Toutiao draft adapter', () => {
       query: vi.fn(async () => [{ id: 7 }]), create: vi.fn(), waitForLoad: vi.fn(),
       executeScript: vi.fn(async (_tabId: number, _func: unknown, args: any[]) => {
         const request = args[0]
+        if (request.kind === 'fill-editor') return { titleFilled: true, bodyFilled: true, titleKind: 'textarea', bodyKind: 'div[contenteditable]' }
         if (request.imageSource) return { ok: true, status: 200, text: JSON.stringify({ code: 0, data: { image: { url: 'https://p3-sign.toutiaoimg.com/tos-cn-i-test/image~tplv-test.image' } } }) }
         if (request.url.startsWith('/mp/agw/article/publish')) {
           savedContent = request.form.content
@@ -850,6 +1085,8 @@ describe('guarded NetEase draft adapter', () => {
   it('does not auto-check platforms whose login probe opens an editor tab', () => {
     expect(shouldAutoCheckPlatformAuth(new NeteaseAdapter().meta)).toBe(false)
     expect(shouldAutoCheckPlatformAuth(new XiaohongshuAdapter().meta)).toBe(false)
+    expect(shouldAutoCheckPlatformAuth(new DoubanAdapter().meta)).toBe(false)
+    expect(shouldAutoCheckPlatformAuth(new DouyinAdapter().meta)).toBe(false)
     expect(shouldAutoCheckPlatformAuth(new ZhihuAdapter().meta)).toBe(true)
   })
 
@@ -1049,7 +1286,7 @@ describe('Stage 3 acceptance safety', () => {
     name: 'yizao-sync-service',
     version: '0.6.2-stage7-caption-cleanup',
     protocol: { name: 'yizao-local-service', version: 2 },
-    build: { packageVersion: 38, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
+    build: { packageVersion: 42, id: EXTENSION_BUILD_ID, extensionBuildId: EXTENSION_BUILD_ID },
   }
 
   it('blocks mismatched service or extension builds', () => {

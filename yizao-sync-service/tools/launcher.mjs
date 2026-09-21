@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { ACCEPTANCE_BUILD } from '../lib/build-info.mjs';
 
 const SERVICE_BASE = 'http://127.0.0.1:8788';
 const HEALTH_URL = `${SERVICE_BASE}/api/health`;
@@ -20,7 +21,10 @@ export function workbenchUrlForOrigin(origin) {
 }
 
 export function healthMatchesExpectedService(health) {
-  return health?.ok === true && health?.name === 'yizao-sync-service';
+  return health?.ok === true
+    && health?.name === 'yizao-sync-service'
+    && health?.build?.id === ACCEPTANCE_BUILD.id
+    && health?.build?.extensionBuildId === ACCEPTANCE_BUILD.extensionBuildId;
 }
 
 async function readHealth() {
@@ -94,7 +98,8 @@ function readToken() {
 async function main() {
   let health = await readHealth();
   if (health && !healthMatchesExpectedService(health)) {
-    throw new Error('端口 8788 已被其他程序占用，请先关闭该程序。');
+    const actual = health?.name === 'yizao-sync-service' ? (health?.build?.id || '未知旧版本') : (health?.name || '其他程序');
+    throw new Error(`端口 8788 正在运行不兼容服务（${actual}），当前代码需要 ${ACCEPTANCE_BUILD.id}。请先关闭旧 node server.mjs 进程，再重新运行启动器。`);
   }
   if (!health) {
     console.log('正在启动易造发布助手本地服务……');

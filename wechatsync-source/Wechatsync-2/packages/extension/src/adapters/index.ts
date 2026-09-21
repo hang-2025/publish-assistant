@@ -26,10 +26,12 @@ import {
 // 导入代码适配器 - 从 core 包
 import {
   DoubanAdapter,
+  DouyinAdapter,
   XueqiuAdapter,
   SohuAdapter,
   ToutiaoAdapter,
   NeteaseAdapter,
+
   XiaohongshuAdapter,
   WoshipmAdapter,
   ZhihuAdapter,
@@ -90,6 +92,7 @@ const ADAPTER_CLASSES: AdapterConstructor[] = [
   CSDNAdapter,
   YuqueAdapter,
   DoubanAdapter,
+  DouyinAdapter,
   SohuAdapter,
   ToutiaoAdapter,
   NeteaseAdapter,

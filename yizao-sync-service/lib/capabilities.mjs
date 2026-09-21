@@ -207,6 +207,23 @@ const LEGACY_PLATFORM_CAPABILITIES = [
     evidence: ['已核对新版 dwarf/drafts 创建与按 ID 回读、topic 图片上传接口；真实账号已验证纯文字私密草稿保存，自动测试覆盖任务授权、回读保真与公开发布拒绝'],
     risks: ['完整五图发布包尚待真实账号人工验收；豆瓣接口改版会导致保存失败，但不会回退调用公开发布'],
   },
+  {
+    id: 'douyin',
+    name: '抖音',
+    group: '主流平台',
+    status: 'guarded-draft-unverified',
+    currentActions: ['只读扫描', '受保护的单篇文章编辑器导入与自动保存（待完整五图人工验收）'],
+    plannedActions: ['用非敏感五图发布包完成一次真实文章草稿验收', '打开自动保存的草稿给用户人工检查'],
+    realActionPolicy: {
+      upload: 'not-supported-as-standalone-action',
+      saveDraft: 'douyin-explicit-confirmation-only',
+      publish: 'not-supported',
+      excelWrite: 'requires-explicit-authorization',
+      archiveMove: 'requires-explicit-authorization',
+    },
+    evidence: ['已实现进入“我要发文”编辑器、标题/正文导入、页面自动保存状态与草稿 ID 回读；自动测试覆盖任务授权、内容保真、受信任 URL 与公开发布拒绝'],
+    risks: ['完整五图发布包尚待当前真实账号人工验收；抖音 SPA 结构更新会导致安全停止，但不会回退点击公开发布'],
+  },
 ];
 
 const architectureById = new Map(platformArchitectureMetadata().map((item) => [item.id, item]));
@@ -279,8 +296,13 @@ export function checkRealActionGate({ action, platform, authorization } = {}) {
     && authorization?.stage === '3-douban-draft'
     && authorization?.userConfirmed === true
     && authorization?.snapshotVerified === true;
+  const stageDouyinDraftAllowed = actionKey === 'saveDraft'
+    && platformKey === 'douyin'
+    && authorization?.stage === '3-douyin-draft'
+    && authorization?.userConfirmed === true
+    && authorization?.snapshotVerified === true;
   const guardedDraftAllowed = stage3DraftAllowed || stage4SohuDraftAllowed || stage5ToutiaoDraftAllowed
-    || stage6NeteaseDraftAllowed || stage7XiaohongshuDraftAllowed || stageCsdnDraftAllowed || stageDoubanDraftAllowed;
+    || stage6NeteaseDraftAllowed || stage7XiaohongshuDraftAllowed || stageCsdnDraftAllowed || stageDoubanDraftAllowed || stageDouyinDraftAllowed;
   const manualArchiveAllowed = actionKey === 'archiveMove'
     && Boolean(platformInfo)
     && authorization?.stage === '8-manual-archive'

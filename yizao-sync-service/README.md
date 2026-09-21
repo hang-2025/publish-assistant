@@ -55,6 +55,7 @@ node server.mjs
 | `prepare/begin/advance/complete/failToutiaoDraft` | 头条号受保护草稿的同等五步握手；独立快照、确认、回读和失败记录 |
 | `prepare/begin/advance/complete/failNeteaseDraft` | 网易号受保护草稿的同等五步握手；要求官方风控令牌、独立快照、确认、回读和失败记录 |
 | `prepare/begin/advance/complete/failXiaohongshuDraft` | 小红书受保护图文草稿的同等五步握手；要求独立快照、当次确认及创作中心 IndexedDB 标题/正文/图片数量回读 |
+| `prepare/begin/advance/complete/failDouyinDraft` | 抖音文章受保护草稿的同等五步握手；通过官方 DOCX 一键导入，回读标题、正文、图片说明、摘要、图片数量与自动保存状态 |
 
 任何其他命令（包括公开 publish、Excel 写入、任意路径移动或批量删除等）都会被白名单拒绝。
 

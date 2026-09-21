@@ -7,6 +7,7 @@ import { toutiaoAdapter } from './toutiao/index.mjs';
 import { xiaohongshuAdapter } from './xiaohongshu/index.mjs';
 import { csdnAdapter } from './csdn/index.mjs';
 import { doubanAdapter } from './douban/index.mjs';
+import { douyinAdapter } from './douyin/index.mjs';
 
 export class PlatformRegistry {
   #adapters = new Map();
@@ -25,7 +26,7 @@ export class PlatformRegistry {
   list() { return [...this.#adapters.values()]; }
 }
 export const platformRegistry = new PlatformRegistry([
-  ...officialAdapters, baijiahaoAdapter, zhihuAdapter, sohuAdapter, toutiaoAdapter, neteaseAdapter, xiaohongshuAdapter, csdnAdapter, doubanAdapter,
+  ...officialAdapters, baijiahaoAdapter, zhihuAdapter, sohuAdapter, toutiaoAdapter, neteaseAdapter, xiaohongshuAdapter, csdnAdapter, doubanAdapter, douyinAdapter,
 ]);
 
 export function platformArchitectureMetadata() {
