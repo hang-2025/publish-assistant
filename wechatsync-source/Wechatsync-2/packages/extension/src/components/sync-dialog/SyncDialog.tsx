@@ -1,7 +1,6 @@
 import { cn } from '@/lib/utils'
 import { ArticleCard } from './ArticleCard'
 import { PlatformList } from './PlatformList'
-import { PromoBanner } from './PromoBanner'
 import { SharePrompt } from './SharePrompt'
 import type { SyncDialogProps } from './types'
 
@@ -51,7 +50,6 @@ export function SyncDialog({
       {/* Scrollable content — single continuous layout */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {/* Promo banner — idle, show before article when no article */}
-        {isIdle && !article && <PromoBanner />}
 
         {/* Article card — compact during sync/complete */}
         <ArticleCard
@@ -61,7 +59,6 @@ export function SyncDialog({
         />
 
         {/* Promo banner — idle, show after article when article exists */}
-        {isIdle && article && <PromoBanner />}
 
         {/* Unified platform list — transitions in-place */}
         {article && (

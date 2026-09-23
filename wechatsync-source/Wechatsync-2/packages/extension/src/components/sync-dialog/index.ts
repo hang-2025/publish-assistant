@@ -1,6 +1,5 @@
 export { SyncDialog } from './SyncDialog'
 export { ArticleCard } from './ArticleCard'
 export { PlatformList } from './PlatformList'
-export { PromoBanner } from './PromoBanner'
 export { SharePrompt } from './SharePrompt'
 export type { SyncDialogProps, Platform, Article, SyncResult, DialogStatus } from './types'

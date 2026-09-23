@@ -15,14 +15,11 @@
 import { htmlToMarkdownNative } from '@wechatsync/core'
 import { createLogger } from '../lib/logger'
 
-const logger = createLogger('Wechatsync')
+const logger = createLogger('YizaoPublishAssistant')
 
 // 页面桥只服务官方控制台；普通网页即使安装了扩展也不能借桥读取账号或发起平台写操作。
 // localhost 仅开发构建开放，避免生产版被任意本地网页滥用。
-const TRUSTED_API_ORIGINS = [
-  'https://www.wechatsync.com',
-  'https://developer.wechatsync.com',
-];
+const TRUSTED_API_ORIGINS: string[] = [];
 
 function isTrustedApiEvent(evt: MessageEvent): boolean {
   if (evt.source !== window) return false

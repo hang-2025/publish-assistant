@@ -1,0 +1,71 @@
+name: Quality Gate
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Windows build and tests
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Verify unified release version
+        run: node tools/sync-release-version.mjs --check
+
+      - name: Install extension dependencies
+        working-directory: wechatsync-source/Wechatsync-2
+        run: pnpm install --frozen-lockfile
+
+      - name: Test extension
+        working-directory: wechatsync-source/Wechatsync-2/packages/extension
+        run: npm test
+
+      - name: Type-check extension
+        working-directory: wechatsync-source/Wechatsync-2/packages/extension
+        run: npm run typecheck
+
+      - name: Build extension
+        working-directory: wechatsync-source/Wechatsync-2/packages/extension
+        run: npm run build
+
+      - name: Verify extension security boundary
+        working-directory: wechatsync-source/Wechatsync-2/packages/extension
+        run: node tests/security-static.mjs
+
+      - name: Verify license files in distributable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'wechatsync-source/Wechatsync-2/packages/extension/dist/LICENSE')) { throw 'dist/LICENSE missing' }
+          if (-not (Test-Path 'wechatsync-source/Wechatsync-2/packages/extension/dist/NOTICE')) { throw 'dist/NOTICE missing' }
+
+      - name: Test local service
+        working-directory: yizao-sync-service
+        run: npm test
+
+      - name: Upload verified extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: yizao-publish-assistant-extension
+          path: wechatsync-source/Wechatsync-2/packages/extension/dist
+          if-no-files-found: error
+          retention-days: 14

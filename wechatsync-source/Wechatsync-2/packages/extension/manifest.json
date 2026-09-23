@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "文章同步助手 · 本地导入试用版",
-  "description": "一键同步文章到知乎、头条、掘金等 20+ 平台，支持 WordPress 等自建站",
+  "name": "易造发布助手",
+  "description": "易造团队使用的多平台文章草稿管理与发布前验收工具",
   "version": "2.0.9.15",
   "icons": {
     "16": "assets/icon-16.png",

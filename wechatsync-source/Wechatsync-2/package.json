@@ -1,8 +1,8 @@
 {
-  "name": "wechatsync",
+  "name": "yizao-publish-assistant",
   "version": "2.0.0",
   "private": true,
-  "description": "微信公众号同步助手 - 多平台内容分发工具",
+  "description": "易造发布助手 - 多平台文章草稿管理与发布前验收工具",
   "workspaces": [
     "packages/*"
   ],

@@ -1,7 +1,12 @@
-export const SERVICE_VERSION = '0.6.2-stage7-caption-cleanup';
-export const LOCAL_PROTOCOL = Object.freeze({ name: 'yizao-local-service', version: 2 });
+import { RELEASE_INFO } from './release-info.generated.mjs';
+
+export const SERVICE_VERSION = RELEASE_INFO.serviceVersion;
+export const LOCAL_PROTOCOL = Object.freeze({
+  name: RELEASE_INFO.protocol.name,
+  version: RELEASE_INFO.protocol.version,
+});
 export const ACCEPTANCE_BUILD = Object.freeze({
-  packageVersion: 42,
-  id: 'stage8-douyin-article-entry-v3.12',
-  extensionBuildId: 'stage8-douyin-article-entry-v3.12',
+  packageVersion: RELEASE_INFO.packageVersion,
+  id: RELEASE_INFO.buildId,
+  extensionBuildId: RELEASE_INFO.buildId,
 });

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings, Plus, Clock, X, Download, Info, LayoutDashboard } from 'lucide-react'
+import { Settings, Plus, Clock, X, Info, LayoutDashboard } from 'lucide-react'
 import { useSyncStore } from '../stores/sync'
 import { SettingsDrawer } from '../components/SettingsDrawer'
 import { SyncDialog } from '@/components/sync-dialog'
@@ -8,7 +8,6 @@ import type { Platform as DialogPlatform } from '@/components/sync-dialog'
 import { cn } from '@/lib/utils'
 import { trackPageView, trackFeatureDiscovery } from '../../lib/analytics'
 import { createLogger } from '../../lib/logger'
-import { getCachedUpdateInfo, dismissUpdate, type UpdateCheckResult } from '../../lib/version-check'
 
 const logger = createLogger('HomeNew')
 
@@ -40,7 +39,6 @@ export function HomeNew() {
   const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null)
   const [allPlatforms, setAllPlatforms] = useState<DialogPlatform[]>([])
 
-  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
   const [floatingEnabled, setFloatingEnabled] = useState(false)
   const [isFirstSync, setIsFirstSync] = useState(false)
   const [showShareTip, setShowShareTip] = useState(false)
@@ -69,10 +67,6 @@ export function HomeNew() {
           setShowShareTip(true)
         }
       })
-      const cached = await getCachedUpdateInfo()
-      if (cached?.hasUpdate && cached.info) {
-        setUpdateInfo(cached)
-      }
     }
     init()
     trackPageView('home').catch(() => {})
@@ -124,7 +118,7 @@ export function HomeNew() {
       <header className="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-b">
         <div className="flex items-center gap-2">
           <img src="/assets/icon-48.png" alt="Logo" className="w-6 h-6" />
-          <h1 className="font-semibold">文章同步助手</h1>
+          <h1 className="font-semibold">易造发布助手</h1>
         </div>
         <nav className="flex items-center gap-0.5">
           <button
@@ -169,51 +163,11 @@ export function HomeNew() {
         </nav>
       </header>
 
-      {/* Version update banner */}
       <div className="px-4 pt-3">
         <button className="w-full rounded-lg bg-blue-600 text-white py-3" onClick={() => {
           chrome.tabs.create({ url: chrome.runtime.getURL('src/local-import/index.html') })
         }}>导入本地文章 / 发布包（Word、MD、HTML）</button>
       </div>
-      {updateInfo?.hasUpdate && updateInfo.info && (
-        <div className="px-4 pt-3">
-          <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-3 text-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
-                <Download className="w-4 h-4" />
-                <span>新版本 v{updateInfo.info.version} 可用</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <a
-                  href={updateInfo.info.downloadUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                >
-                  下载
-                </a>
-                <button
-                  onClick={async () => {
-                    if (updateInfo.info) {
-                      await dismissUpdate(updateInfo.info.version)
-                      chrome.runtime.sendMessage({ type: 'CLEAR_UPDATE_BADGE' }).catch(() => {})
-                      setUpdateInfo(null)
-                    }
-                  }}
-                  className="text-muted-foreground hover:text-foreground"
-                  title="忽略此版本"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            {updateInfo.info.releaseNotes && (
-              <p className="text-xs text-muted-foreground mt-1">{updateInfo.info.releaseNotes}</p>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Share / welcome banner (first time only) */}
       {showShareTip && (
         <div className="px-4 pt-3">
@@ -229,11 +183,11 @@ export function HomeNew() {
             </button>
             <p className="font-medium mb-1.5">谢谢支持！</p>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              如果觉得本工具不错，还请分享给你的朋友！
+              易造发布助手已准备好，可从工作台导入发布包并执行受保护草稿流程。
               <br />
-              如果你是开发者，欢迎参与进来{' '}
+              项目维护与问题反馈请前往{' '}
               <a
-                href="https://github.com/wechatsync/Wechatsync"
+                href="https://github.com/hang-2025/publish-assistant"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary hover:underline"
@@ -243,15 +197,7 @@ export function HomeNew() {
             </p>
             <hr className="my-2 border-border" />
             <p className="text-xs text-muted-foreground text-right">
-              by{' '}
-              <a
-                href="https://fun0.netlify.app/about/?utm_source=wechatsync"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                fun
-              </a>
+              易造团队维护
             </p>
           </div>
         </div>

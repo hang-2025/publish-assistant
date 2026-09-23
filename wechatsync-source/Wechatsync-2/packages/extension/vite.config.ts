@@ -51,6 +51,16 @@ function copyStaticFilesPlugin() {
         }
       }
 
+      // 分发包必须携带开源许可证与修改说明。
+      for (const file of ['LICENSE', 'NOTICE']) {
+        const srcPath = resolve(__dirname, `../../${file}`)
+        const destPath = resolve(distDir, file)
+        if (existsSync(srcPath)) {
+          copyFileSync(srcPath, destPath)
+          console.log(`[copy-static] Copied ${file} to dist/`)
+        }
+      }
+
       // 修改输出的 manifest.json，添加 reader 脚本到 content_scripts
       const manifestPath = resolve(__dirname, 'dist/manifest.json')
       if (existsSync(manifestPath)) {

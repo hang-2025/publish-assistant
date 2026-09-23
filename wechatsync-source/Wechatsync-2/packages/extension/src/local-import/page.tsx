@@ -98,7 +98,7 @@ export function LocalImport() {
     finally { active.current = false; setBusy(false) }
   }
   return <main>
-    <header><small>WECHATSYNC · LOCAL IMPORT</small><h1>把本地文章送到平台草稿箱</h1><p>Word / Markdown / HTML · 图片随正文上传 · 最后发布由你确认</p></header>
+    <header><small>YIZAO · LOCAL IMPORT</small><h1>把本地文章送到平台草稿箱</h1><p>Word / Markdown / HTML · 图片随正文上传 · 最后发布由你确认</p></header>
     <div className="layout"><section className="controls">
       <h2>1. 选择文件</h2>
       <fieldset disabled={busy || loading}>

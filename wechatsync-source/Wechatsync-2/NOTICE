@@ -1,0 +1,15 @@
+易造发布助手（Yizao Publish Assistant）
+
+本发行版由易造团队维护，包含易造团队新增的本地服务、受保护草稿工作流、
+发布包解析、图片说明、保真回读、安全闸门、工作台及平台适配修改。
+
+本项目的浏览器扩展与部分平台适配代码由 WechatSync v2 的 GPL-3.0
+许可源码修改而来。原项目地址：
+https://github.com/wechatsync/Wechatsync
+
+本发行版继续遵循随附 LICENSE 中的 GNU General Public License v3.0。
+“易造发布助手”名称、易造品牌素材以及易造团队独立创作的内容不因此授权
+第三方冒充易造官方产品或使用易造商标。
+
+修改版源码地址：
+https://github.com/hang-2025/publish-assistant

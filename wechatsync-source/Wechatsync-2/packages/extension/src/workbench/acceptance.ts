@@ -1,10 +1,12 @@
+import { RELEASE_INFO } from '../release-info.generated'
+
 // Core guarded-draft behavior changes bump this identity so the workbench cannot
 // silently pair a new local service with an older loaded extension bundle.
-export const EXTENSION_BUILD_ID = 'stage8-douyin-article-entry-v3.12'
-export const ACCEPTANCE_PACKAGE_VERSION = 42
+export const EXTENSION_BUILD_ID = RELEASE_INFO.buildId
+export const ACCEPTANCE_PACKAGE_VERSION = RELEASE_INFO.packageVersion
 export const ACCEPTANCE_PACKAGE_LABEL = '3.12'
-export const EXPECTED_SERVICE_VERSION = '0.6.2-stage7-caption-cleanup'
-export const EXPECTED_PROTOCOL = { name: 'yizao-local-service', version: 2 } as const
+export const EXPECTED_SERVICE_VERSION = RELEASE_INFO.serviceVersion
+export const EXPECTED_PROTOCOL = RELEASE_INFO.protocol
 
 export interface ServiceHealth {
   ok: boolean
