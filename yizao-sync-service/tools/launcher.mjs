@@ -110,6 +110,12 @@ async function main() {
     throw new Error('本地服务启动失败，请确认 Node.js 已安装且端口 8788 未被占用。');
   }
 
+  // Windows 登录自动启动只保证服务可用，不主动弹出 Chrome 窗口。
+  if (process.argv.includes('--service-only')) {
+    console.log('易造发布助手本地服务已就绪。');
+    return;
+  }
+
   const config = readJson(path.join(serviceDir, 'data', 'config.json'));
   const origin = parseTrustedExtensionOrigin(config);
   const workbenchUrl = workbenchUrlForOrigin(origin);
@@ -122,7 +128,7 @@ async function main() {
   openChrome('chrome://extensions');
   const token = readToken();
   console.log('\n这是首次安装，只需配对一次。');
-  console.log('1. 在 Chrome 中确认已加载“文章同步助手”。');
+  console.log('1. 在 Chrome 中确认已加载“易造发布助手”。');
   console.log('2. 点击扩展图标进入工作台。');
   console.log('3. 把下面的令牌粘贴到“服务配对”并保存：\n');
   console.log(token ? `  ${token}\n` : '  未读取到令牌，请重新运行启动器。\n');

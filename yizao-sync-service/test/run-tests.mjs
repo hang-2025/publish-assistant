@@ -66,6 +66,18 @@ test('Windows 启动器只接受名称与验收构建均匹配的本地服务', 
   assert.equal(healthMatchesExpectedService(null), false);
 });
 
+test('Windows 自动启动入口只启动本地服务且不会主动打开浏览器', async () => {
+  const launcher = await fs.readFile(path.join(process.cwd(), 'tools', 'launcher.mjs'), 'utf8');
+  const installScript = await fs.readFile(path.join(process.cwd(), 'tools', 'install-autostart.ps1'), 'utf8');
+  const uninstallScript = await fs.readFile(path.join(process.cwd(), 'tools', 'uninstall-autostart.ps1'), 'utf8');
+  assert.match(launcher, /process\.argv\.includes\('--service-only'\)/);
+  assert.match(installScript, /launcher\.mjs/);
+  assert.match(installScript, /--service-only/);
+  assert.match(installScript, /CreateShortcut/);
+  assert.doesNotMatch(installScript, /chrome\.exe/i);
+  assert.match(uninstallScript, /Remove-Item -LiteralPath \$shortcutPath/);
+});
+
 test('ALT 清单解析保留图片编号前缀和内容冒号', () => {
   assert.deepEqual(parseAltFile([
     '1.jpg：图片1：风电场智能防雷系统覆盖风机',

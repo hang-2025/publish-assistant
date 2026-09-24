@@ -8,4 +8,5 @@ data/
 *.xls
 *.docx
 coverage/
+patch-*.mjs
 .DS_Store
